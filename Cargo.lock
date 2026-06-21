@@ -279,6 +279,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
+name = "difftree"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "colored",
+ "git2",
+ "ignore",
+ "lscolors",
+ "natord",
+ "predicates",
+ "ratatui",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -636,24 +654,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e9323b3525d4efad2dead1837a105e313253bfdbad1d470994038eededa4d62"
 dependencies = [
  "ansi_term",
-]
-
-[[package]]
-name = "lstr"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "colored",
- "git2",
- "ignore",
- "lscolors",
- "natord",
- "predicates",
- "ratatui",
- "tempfile",
- "url",
 ]
 
 [[package]]

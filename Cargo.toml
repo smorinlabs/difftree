@@ -1,13 +1,13 @@
 [package]
-name = "lstr"
-version = "0.2.1" 
-authors = ["Brandon Greenwell <greenwell.brandon@gmail.com>"]
+name = "difftree"
+version = "0.1.0"
+authors = ["smorinlabs <steve@conceptm.com>"]
 edition = "2021"
-description = "A blazingly fast, minimalist directory tree viewer, written in Rust."
-license = "MIT" 
+description = "A blazingly fast, minimalist, git-aware directory tree viewer, written in Rust. An early fork of lstr."
+license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/bgreenwell/lstr" 
-repository = "https://github.com/bgreenwell/lstr" 
+homepage = "https://github.com/smorinlabs/difftree"
+repository = "https://github.com/smorinlabs/difftree"
 keywords = ["ls", "tree", "filesystem", "command-line"]
 categories = ["command-line-utilities", "filesystem"]
 

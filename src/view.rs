@@ -99,7 +99,7 @@ pub fn run(args: &ViewArgs, ls_colors: &LsColors) -> anyhow::Result<()> {
                 }
             }
             Err(err) => {
-                eprintln!("lstr: ERROR: {err}");
+                eprintln!("difftree: ERROR: {err}");
                 None
             }
         })

@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn test_nonexistent_path() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("nonexistent/path/for/testing");
     cmd.assert().failure().stderr(predicate::str::contains("is not a directory"));
     Ok(())
@@ -23,7 +23,7 @@ fn test_simple_view() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(temp_dir.path().join("dir1"))?;
     fs::File::create(temp_dir.path().join("dir1/b.txt"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg(temp_dir.path());
     cmd.assert()
         .success()
@@ -38,11 +38,11 @@ fn test_all_flag() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     fs::File::create(temp_dir.path().join(".hidden"))?;
 
-    let mut cmd_no_all = Command::cargo_bin("lstr")?;
+    let mut cmd_no_all = Command::cargo_bin("difftree")?;
     cmd_no_all.arg(temp_dir.path());
     cmd_no_all.assert().success().stdout(predicate::str::contains(".hidden").not());
 
-    let mut cmd_with_all = Command::cargo_bin("lstr")?;
+    let mut cmd_with_all = Command::cargo_bin("difftree")?;
     cmd_with_all.arg("-a").arg(temp_dir.path());
     cmd_with_all.assert().success().stdout(predicate::str::contains(".hidden"));
     Ok(())
@@ -54,7 +54,7 @@ fn test_depth_flag() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(temp_dir.path().join("dir1"))?;
     fs::File::create(temp_dir.path().join("dir1/b.txt"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("-L").arg("1").arg(temp_dir.path());
     cmd.assert()
         .success()
@@ -98,7 +98,7 @@ fn test_gitignore_flag() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Run lstr, passing the temp path as an argument. This is more robust
     // than relying on `current_dir` for this specific test.
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("-g").arg(temp_path);
 
     // 5. Assert that the correct files are included and excluded.
@@ -121,7 +121,7 @@ fn test_permissions_flag() -> Result<(), Box<dyn std::error::Error>> {
     let perms = fs::Permissions::from_mode(0o550);
     fs::set_permissions(&file_path, perms)?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("-p").arg(temp_dir.path());
     cmd.assert().success().stdout(predicate::str::contains("-r-xr-x---"));
 
@@ -152,7 +152,7 @@ fn test_git_status_flag() -> Result<(), Box<dyn std::error::Error>> {
     Command::new("git").args(["add", "staged.txt"]).current_dir(temp_path).output()?;
     fs::write(temp_path.join("untracked.txt"), "untracked")?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("-G").arg("-a").arg(temp_path);
 
     cmd.assert()
@@ -171,7 +171,7 @@ fn test_sort_by_name() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("apple.txt"))?;
     fs::File::create(temp_dir.path().join("banana.txt"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--sort").arg("name").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -194,7 +194,7 @@ fn test_dirs_first_sorting() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("aaa_file.txt"))?;
     fs::create_dir(temp_dir.path().join("zzz_dir"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--dirs-first").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -216,7 +216,7 @@ fn test_natural_sorting() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("file10.txt"))?;
     fs::File::create(temp_dir.path().join("file2.txt"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--natural-sort").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -239,7 +239,7 @@ fn test_reverse_sorting() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("apple.txt"))?;
     fs::File::create(temp_dir.path().join("zebra.txt"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--reverse").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -261,7 +261,7 @@ fn test_case_sensitive_sorting() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("banana.txt"))?;
 
     // Test case-sensitive (Apple should come before banana in ASCII)
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--case-sensitive").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -283,7 +283,7 @@ fn test_sort_by_extension() -> Result<(), Box<dyn std::error::Error>> {
     fs::File::create(temp_dir.path().join("file.aaa"))?;
     fs::File::create(temp_dir.path().join("file.bbb"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--sort").arg("extension").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -318,7 +318,7 @@ fn test_default_sort_order() -> Result<(), Box<dyn std::error::Error>> {
     assert!(file_a_path.exists(), "Upper.txt was not created");
     assert!(file_a_lower_path.exists(), "lower.txt was not created");
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--case-sensitive").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -350,7 +350,7 @@ fn test_dotfiles_first_sorting() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(temp_dir.path().join("folder"))?;
     fs::create_dir(temp_dir.path().join(".dotfolder"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--dotfiles-first").arg("-a").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -393,7 +393,7 @@ fn test_tree_structure_display() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(temp_dir.path().join("t1/t2/t3"))?;
     fs::write(temp_dir.path().join("t1/tmp.txt"), "temporary content")?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -435,7 +435,7 @@ fn test_tree_structure_with_dirs_first() -> Result<(), Box<dyn std::error::Error
     // Add some nested content
     fs::write(temp_dir.path().join("dir1/nested.txt"), "nested content")?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--dirs-first").arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -462,7 +462,7 @@ fn test_single_file_tree() -> Result<(), Box<dyn std::error::Error>> {
     // Single file should use └──
     fs::write(temp_dir.path().join("single.txt"), "content")?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg(temp_dir.path());
 
     let output = cmd.output()?;
@@ -487,7 +487,7 @@ fn test_deep_nested_tree() -> Result<(), Box<dyn std::error::Error>> {
     // Add sibling to 'a' to test vertical connectors
     fs::create_dir(temp_dir.path().join("sibling"))?;
 
-    let mut cmd = Command::cargo_bin("lstr")?;
+    let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg(temp_dir.path());
 
     let output = cmd.output()?;

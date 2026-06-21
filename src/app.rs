@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
-#[command(override_usage = "lstr [OPTIONS] [PATH]\n    lstr interactive [OPTIONS] [PATH]")]
+#[command(override_usage = "difftree [OPTIONS] [PATH]\n    difftree interactive [OPTIONS] [PATH]")]
 pub struct Args {
     /// The subcommand to run. If no subcommand is specified, the classic tree view is displayed.
     #[command(subcommand)]
