@@ -1,14 +1,18 @@
-# lstr
+# difftree
 
-[![Build Status](https://github.com/bgreenwell/lstr/actions/workflows/ci.yml/badge.svg)](https://github.com/bgreenwell/lstr/actions)
-[![Latest Version](https://img.shields.io/crates/v/lstr.svg)](https://crates.io/crates/lstr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A fast, minimalist directory tree viewer, written in Rust. Inspired by the command line program [tree](https://github.com/Old-Man-Programmer/tree), with a powerful interactive mode.
+A fast, minimalist, git-aware directory tree viewer, written in Rust.
+
+> **Early fork.** difftree is an early-stage fork of
+> [lstr](https://github.com/bgreenwell/lstr) by Brandon Greenwell. At this point
+> it is functionally identical to its upstream seed (lstr 0.2.1) apart from being
+> renamed; git-aware tree features are the planned direction. See
+> [Credits / Attribution](#credits--attribution) and `NOTICE`.
 
 ![](assets/lstr-demo.gif)
 
-*An interactive overview of a project's structure using `lstr`.*
+*An interactive overview of a project's structure (demo inherited from lstr).*
 
 ## Philosophy
 
@@ -17,7 +21,7 @@ A fast, minimalist directory tree viewer, written in Rust. Inspired by the comma
 
 ## Features
 
-  - **Classic and interactive modes:** Use `lstr` for a classic `tree`-like view, or launch `lstr interactive` for a fully interactive TUI.
+  - **Classic and interactive modes:** Use `difftree` for a classic `tree`-like view, or launch `difftree interactive` for a fully interactive TUI.
   - **Theme-aware coloring:** Respects your system's `LS_COLORS` environment variable for fully customizable file and directory colors.
   - **Rich information display (optional):**
       - Display file-specific icons with `--icons` (requires a Nerd Font).
@@ -30,41 +34,25 @@ A fast, minimalist directory tree viewer, written in Rust. Inspired by the comma
 
 ## Installation
 
-### With Homebrew (macOS)
+### From source
 
-The easiest way to install `lstr` on macOS is with Homebrew.
-
-```zsh
-brew install lstr
-```
-
-### From source (all platforms)
-
-You need the Rust toolchain installed on your system to build `lstr`.
+You need the Rust toolchain installed on your system to build `difftree`.
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/bgreenwell/lstr.git
-    cd lstr
+    git clone https://github.com/smorinlabs/difftree.git
+    cd difftree
     ```
 2.  **Build and install using Cargo:**
     ```bash
     cargo install --path .
     ```
 
-### NetBSD
-
-On NetBSD a package is available from the official repositories. To install it, simply run:
-
-```bash
-pkgin install lstr
-```
-
 ## Usage
 
 ```bash
-lstr [OPTIONS] [PATH]
-lstr interactive [OPTIONS] [PATH]
+difftree [OPTIONS] [PATH]
+difftree interactive [OPTIONS] [PATH]
 ```
 
 Note that `PATH` defaults to the current directory (`.`) if not specified.
@@ -93,7 +81,7 @@ Note that `PATH` defaults to the current directory (`.`) if not specified.
 
 ## Interactive mode
 
-Launch the TUI with `lstr interactive [OPTIONS] [PATH]`.
+Launch the TUI with `difftree interactive [OPTIONS] [PATH]`.
 
 ### Keyboard controls
 
@@ -110,61 +98,61 @@ Launch the TUI with `lstr interactive [OPTIONS] [PATH]`.
 **1. List the contents of the current directory**
 
 ```bash
-lstr
+difftree
 ```
 
 **2. Explore a project interactively, ignoring gitignored files**
 
 ```bash
-lstr interactive -g --icons
+difftree interactive -g --icons
 ```
 
 **3. Display a directory with file sizes and permissions (classic view)**
 
 ```bash
-lstr -sp
+difftree -sp
 ```
 
 **4. See the git status of all files in a project**
 
 ```bash
-lstr -aG
+difftree -aG
 ```
 
 **5. Get a tree with clickable file links (in a supported terminal)**
 
 ```bash
-lstr --hyperlinks
+difftree --hyperlinks
 ```
 
 **6. Start an interactive session with all data displayed**
 
 ```bash
-lstr interactive -gG --icons -s -p
+difftree interactive -gG --icons -s -p
 ```
 
 **7. Sort files naturally with directories first**
 
 ```bash
-lstr --dirs-first --natural-sort
+difftree --dirs-first --natural-sort
 ```
 
 **8. Sort by file size in descending order**
 
 ```bash
-lstr --sort size --reverse
+difftree --sort size --reverse
 ```
 
 **9. Sort by extension with case-sensitive ordering**
 
 ```bash
-lstr --sort extension --case-sensitive
+difftree --sort extension --case-sensitive
 ```
 
 **10. Sort with dotfiles first and directories first**
 
 ```bash
-lstr --dotfiles-first --dirs-first -a
+difftree --dotfiles-first --dirs-first -a
 ```
 
 ## Piping and shell interaction
@@ -176,10 +164,10 @@ The classic `view` mode is designed to work well with other command-line tools v
 This is a powerful way to instantly find any file in a large project.
 
 ```bash
-lstr -a -g --icons | fzf
+difftree -a -g --icons | fzf
 ```
 
-`fzf` will take the tree from `lstr` and provide an interactive search prompt to filter it.
+`fzf` will take the tree from `difftree` and provide an interactive search prompt to filter it.
 
 ### Paging large trees with `less` or `bat`
 
@@ -187,23 +175,23 @@ If a directory is too large to fit on one screen, pipe the output to a *pager*.
 
 ```bash
 # Using less (the -R flag preserves color)
-lstr -L 10 | less -R
+difftree -L 10 | less -R
 
 # Using bat (a modern pager that understands colors)
-lstr --icons | bat
+difftree --icons | bat
 ```
 
-### Changing directories with `lstr`
+### Changing directories with `difftree`
 
-You can use `lstr` as a visual `cd` command. Add the following function to your shell's startup file (e.g., `~/.bashrc`, `~/.zshrc`):
+You can use `difftree` as a visual `cd` command. Add the following function to your shell's startup file (e.g., `~/.bashrc`, `~/.zshrc`):
 
 ```bash
-# A function to visually change directories with lstr
+# A function to visually change directories with difftree
 lcd() {
-    # Run lstr and capture the selected path into a variable.
+    # Run difftree and capture the selected path into a variable.
     # The TUI will draw on stderr, and the final path will be on stdout.
     local selected_dir
-    selected_dir="$(lstr interactive -g --icons)"
+    selected_dir="$(difftree interactive -g --icons)"
 
     # If the user selected a path (and didn't just quit), `cd` into it.
     # Check if the selection is a directory.
@@ -219,11 +207,11 @@ After adding this and starting a new shell session (or running `source ~/.bashrc
 lcd
 ```
 
-This will launch the `lstr` interactive UI. Navigate to the directory you want, press `Ctrl+s`, and your shell's current directory will instantly change.
+This will launch the `difftree` interactive UI. Navigate to the directory you want, press `Ctrl+s`, and your shell's current directory will instantly change.
 
 ## Color customization
 
-`lstr` respects your terminal's color theme by default. It reads the `LS_COLORS` environment variable to colorize files and directories according to your system's configuration. This is the same variable used by GNU `ls` and other modern command-line tools.
+`difftree` respects your terminal's color theme by default. It reads the `LS_COLORS` environment variable to colorize files and directories according to your system's configuration. This is the same variable used by GNU `ls` and other modern command-line tools.
 
 ### Linux
 
@@ -235,7 +223,7 @@ macOS does not set the `LS_COLORS` variable by default. To enable this feature, 
 
 ```bash
 brew install coreutils
-````
+```
 
 Then, add the following line to your shell's startup file (e.g., `~/.zshrc` or `~/.bash_profile`):
 
@@ -272,12 +260,18 @@ set LS_COLORS=rs=0:di=01;34:ln=01;36:ex=01;32:*.zip=01;31:*.png=01;35:
 
 To make the setting permanent, you can add the command to your PowerShell profile or set it in the system's "Environment Variables" dialog.
 
-After setting the variable and starting a new shell session, `lstr` will automatically display your configured colors.
+After setting the variable and starting a new shell session, `difftree` will automatically display your configured colors.
 
 ## Inspiration
 
-The philosophy and functionality of `lstr` are heavily inspired by the excellent C-based [tree](https://github.com/Old-Man-Programmer/tree) command line program. This project is an attempt to recreate that classic utility in modern, safe Rust.
+The philosophy and functionality of difftree (via lstr) are heavily inspired by the excellent C-based [tree](https://github.com/Old-Man-Programmer/tree) command line program. This project is an attempt to recreate that classic utility in modern, safe Rust.
+
+## Credits / Attribution
+
+difftree is a fork of **[lstr](https://github.com/bgreenwell/lstr)** by **Brandon Greenwell**, used under the MIT License. It was seeded from lstr version 0.2.1 (commit `7e522189e9acc0a8a50d08b9730d1f5c96c7f014`).
+
+Enormous thanks to Brandon Greenwell and the lstr contributors for the original work. The original copyright and MIT license terms are preserved in [`LICENSE`](LICENSE), and provenance details are recorded in [`NOTICE`](NOTICE).
 
 ## License
 
-This project is licensed under the terms of the [MIT License](https://www.google.com/search?q=LICENSE).
+This project is licensed under the terms of the [MIT License](LICENSE).

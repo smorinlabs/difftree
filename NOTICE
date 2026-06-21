@@ -1,0 +1,11 @@
+difftree
+========
+
+difftree is a fork of lstr (https://github.com/bgreenwell/lstr) by Brandon
+Greenwell, used under the MIT License.
+
+Seeded from lstr version 0.2.1, commit 7e522189e9acc0a8a50d08b9730d1f5c96c7f014.
+
+The original lstr copyright and MIT license terms are preserved in the LICENSE
+file. All subsequent difftree modifications are likewise distributed under the
+MIT License.
