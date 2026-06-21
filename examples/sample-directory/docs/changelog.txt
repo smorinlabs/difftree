@@ -1,0 +1,9 @@
+CHANGELOG
+=========
+
+v1.0.0 - Initial release
+- Basic tree functionality
+
+v1.1.0 - Tree connectors
+- Fixed tree display issue
+- Added proper ├── and └── connectors

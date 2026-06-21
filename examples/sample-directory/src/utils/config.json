@@ -1,0 +1,11 @@
+{
+  "name": "sample-app",
+  "version": "1.0.0",
+  "debug": true,
+  "max_depth": 10,
+  "features": [
+    "tree-display",
+    "icons",
+    "colors"
+  ]
+}

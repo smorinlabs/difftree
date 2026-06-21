@@ -1,0 +1,39 @@
+[package]
+name = "lstr"
+version = "0.2.1" 
+authors = ["Brandon Greenwell <greenwell.brandon@gmail.com>"]
+edition = "2021"
+description = "A blazingly fast, minimalist directory tree viewer, written in Rust."
+license = "MIT" 
+readme = "README.md"
+homepage = "https://github.com/bgreenwell/lstr" 
+repository = "https://github.com/bgreenwell/lstr" 
+keywords = ["ls", "tree", "filesystem", "command-line"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+anyhow = "1.0"
+colored = "2.1.0"
+clap = { version = "4.5.7", features = ["derive"] }
+git2 = { version = "0.20.2", default-features = false }
+ignore = "0.4.22"
+lscolors = "0.9"
+url = "2.5.2"
+ratatui = "0.27.0"
+natord = "1.0"
+
+# Dependencies for testing the command-line interface
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+
+[workspace]
+# Exclude the examples directory from being treated as a workspace member
+exclude = ["examples/sample-directory"]
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
