@@ -1,0 +1,5 @@
+{
+  "companyAnnouncements": [
+    "difftree is a fast, minimalist, git-aware directory tree viewer in Rust — a clean MIT fork of lstr (Brandon Greenwell). Commands: /code-review (review the current diff), /create-pr (open a PR from changes), /find-bugs (audit for bugs). See README.md and NOTICE for usage and attribution."
+  ]
+}
