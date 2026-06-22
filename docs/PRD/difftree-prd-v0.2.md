@@ -87,6 +87,7 @@ Blast-radius view · full status-marked file tree · path scoping · all-files v
 ### 6.4 Comparison modes (all in v1)
 - Default: **staged**.
 - `--unstaged`, `--all`, `--range <a>..<b>`, `--against <ref>`. **[DETAIL]** precedence rules when combined; resolve name collision between `--all` (comparison) and any all-files flag (rename the latter, e.g. `--every-file`).
+  - **Resolved (2026-06-21):** `--all` (alias `--tree`) names the **all-files view**; the combined staged+unstaged **comparison** is `--uncommitted`; `--staged`/`--cached` is the explicit staged comparison. This inverts the earlier `--every-file` suggestion. See `docs/superpowers/specs/2026-06-21-view-and-comparison-flags-design.md`.
 
 ### 6.5 Views & flag surface (proposed; naming pass pending)
 - `difftree` → blast-radius (staged, auto-fallback unstaged).

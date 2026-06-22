@@ -32,21 +32,23 @@ When comparison flags are combined, difftree uses the first applicable mode in t
 
 1. `--range <A..B>`
 2. `--against <ref>`
-3. `--all`
+3. `--uncommitted`
 4. `--unstaged`
-5. default staged, with the documented unstaged fallback for the hero view
+5. `--staged` (explicit; no auto-fallback)
+6. default staged, with the documented unstaged fallback for the hero view
 
-`tree` compatibility keeps `-a` as "show hidden files". The git comparison mode is available only as long-form `--all`.
+`tree` compatibility keeps `-a` as "show hidden files". The combined (HEAD vs working tree plus index) comparison is `--uncommitted`; `--all` (alias `--tree`) selects the all-files **view**, not a comparison.
 
 ## Flag table
 
 | Flag | Meaning |
 | --- | --- |
 | `<path>` | Scope the selected view to a path. |
-| `--tree` | Full status-marked tree. |
+| `--all`, `--tree` | All-files view: every file, with change marks overlaid (Clean when unchanged). |
 | `--plain`, `--no-git` | Classic tree mode with no git overlay. |
+| `--staged`, `--cached` | Compare index to HEAD (explicit; no auto-fallback). |
 | `--unstaged` | Compare working tree to index. |
-| `--all` | Compare HEAD to working tree plus index. |
+| `--uncommitted` | Compare HEAD to working tree plus index (staged + unstaged + untracked). |
 | `--range <A..B>` | Compare two revisions. |
 | `--against <ref>` | Compare a ref to the working tree plus index. |
 | `--json` | Emit the JSON model. |
@@ -68,6 +70,7 @@ When comparison flags are combined, difftree uses the first applicable mode in t
 The v1 schema is versioned by `schema_version: "difftree.v1"` and contains:
 
 - `comparison`: the active comparison mode and parameters.
+- `view`: the active view, `"blast-radius"` or `"all-files"`.
 - `fallback`: null or the exact fallback heading.
 - `root`: recursive tree nodes with `name`, `path`, `kind`, `status`, `churn`, `rollup`, and `children`.
 - `summary`: repository/view-level `dirs_touched`, `files_changed`, and `churn` totals.
