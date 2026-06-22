@@ -21,3 +21,19 @@ Greenwell, used under the MIT License. See `NOTICE` for provenance.
 - Renamed the crate and binary from `lstr` to `difftree`. Behavior is otherwise
   identical to the upstream seed; git-aware tree features are the planned
   direction.
+
+## Unreleased
+
+### Added
+
+- All-files view (`--all`, alias `--tree`): renders the complete directory tree
+  with git change marks overlaid; unchanged files are shown as `Clean`.
+- Explicit `--staged` (alias `--cached`) comparison flag.
+- `--uncommitted` comparison (staged + unstaged + untracked vs HEAD), renamed
+  from the previous `--all` comparison meaning.
+- `view` field (`blast-radius` | `all-files`) in the `--json` model.
+
+### Changed
+
+- `--all` no longer means the combined comparison; use `--uncommitted` for that.
+- `--tree` now shows every file (previously it rendered only changed files).

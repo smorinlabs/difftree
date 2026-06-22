@@ -275,3 +275,15 @@ Enormous thanks to Brandon Greenwell and the lstr contributors for the original 
 ## License
 
 This project is licensed under the terms of the [MIT License](LICENSE).
+
+## difftree v0.2 PRD slice
+
+The v0.2 implementation introduces the git-aware blast-radius surface described in `docs/PRD/difftree-prd-v0.2.md`:
+
+- Bare `difftree` in a git repository shows staged blast radius and falls back with `No staged changes — showing unstaged blast radius` when staged changes are empty.
+- Comparison modes: `--unstaged`, `--all`, `--range <A..B>`, and `--against <ref>`.
+- `--tree` renders a full status-marked tree; `--plain`/`--no-git` preserves classic tree behavior.
+- `--json` serializes the shared core model with `schema_version: "difftree.v1"`.
+- `--marks=symbol|letter|xy` controls status marks; `--heat=color,bar,badge` records the v1 heat-component grammar.
+
+See `docs/specs/difftree-decisions-v0.2.md` for the locked flag table and JSON contract.
