@@ -718,6 +718,31 @@ fn test_staged_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+fn test_subpath_scope_not_doubled() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::create_dir(p.join("src"))?;
+    fs::write(p.join("src/foo.rs"), "x")?;
+    Command::new("git").args(["add", "src/foo.rs"]).current_dir(p).output()?;
+
+    // Scope to the subdir; the tree must not double the scope dir (src -> src -> foo.rs).
+    let output = Command::cargo_bin("difftree")?
+        .arg("--staged")
+        .arg("--json")
+        .arg(p.join("src"))
+        .output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("foo.rs"));
+    // The scope dir name appears exactly once (the root), not a doubled child node.
+    assert_eq!(stdout.matches("\"name\": \"src\"").count(), 1, "scope dir was doubled:\n{stdout}");
+    Ok(())
+}
+
+#[test]
 fn test_range_excludes_untracked() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let p = temp_dir.path();

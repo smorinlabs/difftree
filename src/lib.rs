@@ -204,6 +204,13 @@ pub fn collect_changes(
         add_untracked(&repo, &mut files)?;
     }
     files.retain(|f| scope_rel.as_os_str().is_empty() || f.path.starts_with(scope_rel));
+    if !scope_rel.as_os_str().is_empty() {
+        for f in &mut files {
+            if let Ok(rel) = f.path.strip_prefix(scope_rel) {
+                f.path = rel.to_path_buf();
+            }
+        }
+    }
     let root_name = if scope_rel.as_os_str().is_empty() {
         workdir.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string()
     } else {
