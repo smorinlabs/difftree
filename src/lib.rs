@@ -209,7 +209,8 @@ pub fn collect_changes(
     } else {
         scope_rel.display().to_string()
     };
-    Ok(Some(build_tree(root_name, mode, View::BlastRadius, files, None)))
+    let (dirset, fmap) = files_to_maps(files);
+    Ok(Some(build_tree(root_name, mode, View::BlastRadius, dirset, fmap, None)))
 }
 
 pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<ChangeTree>> {
@@ -291,13 +292,7 @@ fn add_untracked(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Resu
     }
     Ok(())
 }
-fn build_tree(
-    root_name: String,
-    mode: ComparisonMode,
-    view: View,
-    files: Vec<FileChange>,
-    fallback: Option<String>,
-) -> ChangeTree {
+fn files_to_maps(files: Vec<FileChange>) -> (BTreeSet<PathBuf>, BTreeMap<PathBuf, FileChange>) {
     let mut dirset = BTreeSet::new();
     let mut fmap = BTreeMap::new();
     for f in files {
@@ -308,6 +303,17 @@ fn build_tree(
         }
         fmap.insert(f.path.clone(), f);
     }
+    (dirset, fmap)
+}
+
+fn build_tree(
+    root_name: String,
+    mode: ComparisonMode,
+    view: View,
+    dirset: BTreeSet<PathBuf>,
+    fmap: BTreeMap<PathBuf, FileChange>,
+    fallback: Option<String>,
+) -> ChangeTree {
     fn child_paths(
         parent: &Path,
         dirs: &BTreeSet<PathBuf>,
@@ -338,7 +344,11 @@ fn build_tree(
                 kind: NodeKind::File,
                 status: f.status.clone(),
                 churn: f.churn.clone(),
-                rollup: Rollup { dirs_touched: 0, files_changed: 1, churn: f.churn.clone() },
+                rollup: Rollup {
+                    dirs_touched: 0,
+                    files_changed: if f.status == ChangeStatus::Clean { 0 } else { 1 },
+                    churn: f.churn.clone(),
+                },
                 children: vec![],
             }
         } else {
@@ -348,7 +358,8 @@ fn build_tree(
             let mut r = Rollup::default();
             for c in &ch {
                 if c.kind == NodeKind::Directory {
-                    r.dirs_touched += 1 + c.rollup.dirs_touched;
+                    r.dirs_touched +=
+                        c.rollup.dirs_touched + usize::from(c.rollup.files_changed > 0);
                 }
                 r.files_changed += c.rollup.files_changed;
                 r.churn.added += c.rollup.churn.added;
@@ -381,7 +392,7 @@ fn build_tree(
     let mut summary = Rollup::default();
     for c in &children {
         if c.kind == NodeKind::Directory {
-            summary.dirs_touched += 1 + c.rollup.dirs_touched;
+            summary.dirs_touched += c.rollup.dirs_touched + usize::from(c.rollup.files_changed > 0);
         }
         summary.files_changed += c.rollup.files_changed;
         summary.churn.added += c.rollup.churn.added;
