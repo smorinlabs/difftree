@@ -306,6 +306,82 @@ fn files_to_maps(files: Vec<FileChange>) -> (BTreeSet<PathBuf>, BTreeMap<PathBuf
     (dirset, fmap)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct WalkOpts {
+    pub all: bool,
+    pub gitignore: bool,
+    pub level: Option<usize>,
+    pub dirs_only: bool,
+}
+
+pub fn collect_all_files(
+    start: &Path,
+    mode: ComparisonMode,
+    opts: WalkOpts,
+) -> anyhow::Result<Option<ChangeTree>> {
+    let Ok(repo) = Repository::discover(start) else {
+        return Ok(None);
+    };
+    let workdir =
+        repo.workdir().ok_or_else(|| anyhow::anyhow!("bare repositories are not supported"))?;
+    let scope = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    let scope_rel = scope.strip_prefix(workdir).unwrap_or(Path::new("")).to_path_buf();
+
+    // Build the git change map, re-keyed relative to the scope root.
+    let mut changed = diff_files(&repo, &mode)?;
+    add_untracked(&repo, &mut changed)?;
+    let mut change_map: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
+    for mut f in changed {
+        let rel = if scope_rel.as_os_str().is_empty() {
+            Some(f.path.clone())
+        } else {
+            f.path.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
+        };
+        if let Some(rel) = rel {
+            f.path = rel.clone();
+            change_map.insert(rel, f);
+        }
+    }
+
+    // Walk the filesystem; keys are paths relative to the scope root.
+    let mut builder = ignore::WalkBuilder::new(start);
+    builder.hidden(!opts.all).git_ignore(opts.gitignore);
+    if let Some(level) = opts.level {
+        builder.max_depth(Some(level));
+    }
+    let mut dirset: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut fmap: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
+    for result in builder.build() {
+        let Ok(entry) = result else { continue };
+        if entry.depth() == 0 {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(start) else { continue };
+        let rel = rel.to_path_buf();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            dirset.insert(rel);
+        } else {
+            if opts.dirs_only {
+                continue;
+            }
+            let fc = change_map.get(&rel).cloned().unwrap_or_else(|| FileChange {
+                path: rel.clone(),
+                status: ChangeStatus::Clean,
+                churn: Churn::default(),
+            });
+            fmap.insert(rel, fc);
+        }
+    }
+
+    let root_name = if scope_rel.as_os_str().is_empty() {
+        workdir.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string()
+    } else {
+        scope_rel.display().to_string()
+    };
+    Ok(Some(build_tree(root_name, mode, View::AllFiles, dirset, fmap, None)))
+}
+
 fn build_tree(
     root_name: String,
     mode: ComparisonMode,
@@ -414,5 +490,53 @@ fn build_tree(
         root,
         summary,
         fallback,
+    }
+}
+
+#[cfg(test)]
+mod all_files_tests {
+    use super::*;
+    use std::process::Command as Pcmd;
+
+    fn git(dir: &Path, args: &[&str]) {
+        Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+    }
+
+    #[test]
+    fn all_files_view_includes_unchanged_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::create_dir(p.join("src")).unwrap();
+        std::fs::create_dir(p.join("docs")).unwrap();
+        std::fs::write(p.join("src/changed.rs"), "a").unwrap();
+        std::fs::write(p.join("docs/readme.md"), "b").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "init"]);
+        std::fs::write(p.join("src/changed.rs"), "a2").unwrap();
+        git(p, &["add", "src/changed.rs"]);
+
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
+        let tree = collect_all_files(p, ComparisonMode::Staged, opts).unwrap().unwrap();
+        assert_eq!(tree.view, View::AllFiles);
+
+        // Collect every file name present in the tree.
+        fn names(n: &TreeNode, out: &mut Vec<(String, ChangeStatus)>) {
+            if n.kind == NodeKind::File {
+                out.push((n.name.clone(), n.status.clone()));
+            }
+            for c in &n.children {
+                names(c, out);
+            }
+        }
+        let mut files = Vec::new();
+        names(&tree.root, &mut files);
+        assert!(files.iter().any(|(n, _)| n == "readme.md"), "unchanged file must appear");
+        let changed = files.iter().find(|(n, _)| n == "changed.rs").expect("changed file present");
+        assert_eq!(changed.1, ChangeStatus::Staged);
+        let unchanged = files.iter().find(|(n, _)| n == "readme.md").unwrap();
+        assert_eq!(unchanged.1, ChangeStatus::Clean);
     }
 }
