@@ -709,6 +709,15 @@ fn test_json_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+fn test_staged_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?; // not a git repo
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--staged").arg(temp_dir.path());
+    cmd.assert().failure().stderr(predicate::str::contains("requires a git repository"));
+    Ok(())
+}
+
+#[test]
 fn test_range_excludes_untracked() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let p = temp_dir.path();

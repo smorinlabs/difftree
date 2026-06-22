@@ -48,6 +48,7 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         || view_args.git_status
         || (!view_args.json
             && !view_args.all
+            && !view_args.staged
             && !view_args.unstaged
             && !view_args.uncommitted
             && view_args.range.is_none()
