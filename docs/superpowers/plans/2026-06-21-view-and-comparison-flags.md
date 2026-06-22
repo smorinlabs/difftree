@@ -644,7 +644,7 @@ pub fn collect_all_files(
             if opts.dirs_only {
                 continue;
             }
-            let fc = change_map.get(&rel).cloned().unwrap_or(FileChange {
+            let fc = change_map.get(&rel).cloned().unwrap_or_else(|| FileChange {
                 path: rel.clone(),
                 status: ChangeStatus::Clean,
                 churn: Churn::default(),
