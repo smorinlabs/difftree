@@ -67,7 +67,7 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     } else if let Some(reference) = &view_args.against {
         ComparisonMode::Against { reference: reference.clone() }
     } else if view_args.all {
-        ComparisonMode::All
+        ComparisonMode::Uncommitted
     } else if view_args.unstaged {
         ComparisonMode::Unstaged
     } else {

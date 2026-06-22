@@ -11,7 +11,7 @@ pub const SCHEMA_VERSION: &str = "difftree.v1";
 pub enum ComparisonMode {
     Staged,
     Unstaged,
-    All,
+    Uncommitted,
     Range { range: String },
     Against { reference: String },
 }
@@ -229,7 +229,7 @@ fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<Fi
             repo.diff_tree_to_index(head.as_ref(), Some(&idx), Some(&mut opts))?
         }
         ComparisonMode::Unstaged => repo.diff_index_to_workdir(None, Some(&mut opts))?,
-        ComparisonMode::All => repo.diff_tree_to_workdir_with_index(
+        ComparisonMode::Uncommitted => repo.diff_tree_to_workdir_with_index(
             repo.head().ok().and_then(|h| h.peel_to_tree().ok()).as_ref(),
             Some(&mut opts),
         )?,
