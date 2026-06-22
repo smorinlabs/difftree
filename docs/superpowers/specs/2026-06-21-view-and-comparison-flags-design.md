@@ -87,8 +87,12 @@ but the PRD deliberately chose staged-first as the hero, and we honor that.
 One engine powers blast-radius, all-files, and `--json`.
 
 - New `lib.rs` collection entry point for the all-files view:
-  1. Walk the scoped path with the `ignore` crate, honoring `-a`, `-g`/`--gitignore`,
-     `-L`/`--depth`, `-d`/`--dirs-only`, and the sort options (reuse `sort.rs`).
+  1. Walk the scoped path with the `ignore` crate, honoring the *filtering* flags `-a`,
+     `-g`/`--gitignore`, `-L`/`--depth`, `-d`/`--dirs-only`. Children are name-sorted within
+     the model (matching blast-radius today). NOTE: full sort-flag support
+     (`--sort size|modified|extension`, `--dirs-first`, `--reverse`, `--natural-sort`, …) is
+     **not** plumbed through the change-model renderer for *either* view yet; that is a shared
+     follow-up (see §9) so both views gain it together, not part of this work.
   2. Build a **complete** `TreeNode` tree (every directory and file).
   3. Overlay each file's `status` + `churn` from the existing `path → FileChange` map
      produced by the selected comparison. Unchanged files → `ChangeStatus::Clean`.
@@ -139,3 +143,6 @@ PRD/decisions-doc naming update.
 - `--heat` rendering (flag parsed, not yet visualized).
 - `--show-ignored` / `--ignored` visualizer wiring.
 - `tree`-compat flags `-P` / `-I` / `--prune` / `--noreport` / `--filelimit` wiring.
+- Full sort-flag support in the change-model renderer (`--sort`, `--dirs-first`, `--reverse`,
+  `--natural-sort`, `--case-sensitive`, `--dotfiles-first`) — a shared follow-up that should
+  apply to blast-radius and all-files together; the model name-sorts children for now.
