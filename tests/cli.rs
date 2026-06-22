@@ -718,6 +718,20 @@ fn test_staged_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+fn test_all_outside_git_repo_warns_not_silent() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?; // not a git repo
+    fs::File::create(temp_dir.path().join("a.txt"))?;
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--all").arg(temp_dir.path());
+    // --all degrades to a plain tree outside git, but must NOT be silent about it.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("a.txt"))
+        .stderr(predicate::str::contains("outside a git repository"));
+    Ok(())
+}
+
+#[test]
 fn test_subpath_scope_not_doubled() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let p = temp_dir.path();

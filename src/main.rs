@@ -105,6 +105,11 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
                 "difftree: this command requires a git repository (use --plain for a plain tree, or run inside a repo)"
             );
         }
+        if view_args.all {
+            eprintln!(
+                "difftree: outside a git repository; showing plain tree (git features unavailable)"
+            );
+        }
         return view::run(view_args, ls_colors);
     };
     if view_args.json {
