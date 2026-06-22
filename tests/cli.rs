@@ -547,7 +547,7 @@ fn test_default_fallback_wording_when_only_unstaged() -> Result<(), Box<dyn std:
     cmd.arg(temp_path);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("No staged changes — showing unstaged blast radius"))
+        .stdout(predicate::str::contains("No staged changes — showing unstaged changes"))
         .stdout(predicate::str::contains("tracked.txt"));
     Ok(())
 }
@@ -630,5 +630,54 @@ fn test_json_includes_view_field() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("\"view\": \"blast-radius\""));
+    Ok(())
+}
+
+#[test]
+fn test_all_files_view_shows_unchanged_files() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::create_dir(p.join("src"))?;
+    fs::create_dir(p.join("docs"))?;
+    fs::write(p.join("src/changed.rs"), "a")?;
+    fs::write(p.join("docs/readme.md"), "b")?;
+    Command::new("git").args(["add", "."]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    fs::write(p.join("src/changed.rs"), "a2")?;
+    Command::new("git").args(["add", "src/changed.rs"]).current_dir(p).output()?;
+
+    for flag in ["--all", "--tree"] {
+        let mut cmd = Command::cargo_bin("difftree")?;
+        cmd.arg(flag).arg(p);
+        cmd.assert()
+            .success()
+            .stdout(predicate::str::contains("changed.rs"))
+            .stdout(predicate::str::contains("readme.md"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_all_files_json_marks_unchanged_clean() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("unchanged.txt"), "x")?;
+    fs::write(p.join("staged.txt"), "y")?;
+    Command::new("git").args(["add", "unchanged.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    fs::write(p.join("staged.txt"), "y")?;
+    Command::new("git").args(["add", "staged.txt"]).current_dir(p).output()?;
+
+    let output = Command::cargo_bin("difftree")?.arg("--all").arg("--json").arg(p).output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("\"view\": \"all-files\""));
+    assert!(stdout.contains("unchanged.txt"));
+    assert!(stdout.contains("\"Clean\""));
     Ok(())
 }

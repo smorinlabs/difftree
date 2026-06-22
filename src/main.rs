@@ -13,8 +13,8 @@ use clap::Parser;
 #[cfg(windows)]
 use colored::control;
 use difftree::{
-    collect_changes, collect_default_with_fallback, ComparisonMode, JsonRenderer, OutputFormat,
-    Renderer, TerminalRenderer,
+    collect_all_files, collect_changes, collect_default_with_fallback, ComparisonMode,
+    JsonRenderer, OutputFormat, Renderer, TerminalRenderer,
 };
 use lscolors::LsColors;
 
@@ -46,9 +46,9 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     let wants_plain_tree = view_args.plain
         || view_args.git_status
         || (!view_args.json
-            && !view_args.tree
-            && !view_args.unstaged
             && !view_args.all
+            && !view_args.unstaged
+            && !view_args.uncommitted
             && view_args.range.is_none()
             && view_args.against.is_none()
             && !view_args.ignored
@@ -78,8 +78,28 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         || view_args.staged
         || view_args.range.is_some()
         || view_args.against.is_some();
-    let use_fallback = !explicit_mode && !view_args.tree && !view_args.all && !view_args.ignored;
-    let tree = if use_fallback {
+    let use_fallback = !explicit_mode && !view_args.all && !view_args.ignored;
+    let walk = difftree::WalkOpts {
+        all: view_args.show_all,
+        gitignore: view_args.gitignore,
+        level: view_args.level,
+        dirs_only: view_args.dirs_only,
+    };
+    let tree = if view_args.all {
+        // All-files view honors the same staged -> unstaged fallback as the bare
+        // default when no explicit comparison flag is given (spec §3).
+        let mut t = collect_all_files(&view_args.path, mode.clone(), walk)?;
+        if !explicit_mode && t.as_ref().is_some_and(|i| i.summary.files_changed == 0) {
+            let mut u = collect_all_files(&view_args.path, ComparisonMode::Unstaged, walk)?;
+            if let Some(ui) = &mut u {
+                ui.fallback = Some("No staged changes — showing unstaged changes".to_string());
+            }
+            if u.is_some() {
+                t = u;
+            }
+        }
+        t
+    } else if use_fallback {
         collect_default_with_fallback(&view_args.path)?
     } else {
         collect_changes(&view_args.path, mode, true)?

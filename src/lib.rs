@@ -220,7 +220,7 @@ pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<Chan
     }
     let mut unstaged = collect_changes(start, ComparisonMode::Unstaged, true)?;
     if let Some(t) = &mut unstaged {
-        t.fallback = Some("No staged changes — showing unstaged blast radius".to_string());
+        t.fallback = Some("No staged changes — showing unstaged changes".to_string());
     }
     if unstaged.is_some() {
         staged = unstaged;

@@ -34,15 +34,13 @@ pub struct ViewArgs {
     pub json: bool,
     #[arg(long, alias = "no-git")]
     pub plain: bool,
-    #[arg(long)]
-    pub tree: bool,
     #[arg(long, alias = "cached")]
     pub staged: bool,
     #[arg(long)]
     pub unstaged: bool,
     #[arg(long)]
     pub uncommitted: bool,
-    #[arg(long)]
+    #[arg(long, alias = "tree")]
     pub all: bool,
     #[arg(long, value_name = "A..B")]
     pub range: Option<String>,
