@@ -500,3 +500,76 @@ fn test_deep_nested_tree() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_json_schema_version_for_staged_change() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let temp_path = temp_dir.path();
+    Command::new("git").arg("init").current_dir(temp_path).output()?;
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_path)
+        .output()?;
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(temp_path)
+        .output()?;
+    fs::write(temp_path.join("changed.txt"), "hello")?;
+    Command::new("git").args(["add", "changed.txt"]).current_dir(temp_path).output()?;
+
+    let output = Command::cargo_bin("difftree")?.arg("--json").arg(temp_path).output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("\"schema_version\": \"difftree.v1\""));
+    assert!(stdout.contains("changed.txt"));
+    Ok(())
+}
+
+#[test]
+fn test_default_fallback_wording_when_only_unstaged() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let temp_path = temp_dir.path();
+    Command::new("git").arg("init").current_dir(temp_path).output()?;
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_path)
+        .output()?;
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(temp_path)
+        .output()?;
+    fs::write(temp_path.join("tracked.txt"), "one")?;
+    Command::new("git").args(["add", "tracked.txt"]).current_dir(temp_path).output()?;
+    Command::new("git").args(["commit", "-m", "initial"]).current_dir(temp_path).output()?;
+    fs::write(temp_path.join("tracked.txt"), "two")?;
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg(temp_path);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("No staged changes — showing unstaged blast radius"))
+        .stdout(predicate::str::contains("tracked.txt"));
+    Ok(())
+}
+
+#[test]
+fn test_mark_scheme_letter() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let temp_path = temp_dir.path();
+    Command::new("git").arg("init").current_dir(temp_path).output()?;
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_path)
+        .output()?;
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(temp_path)
+        .output()?;
+    fs::write(temp_path.join("new.txt"), "hello")?;
+    Command::new("git").args(["add", "new.txt"]).current_dir(temp_path).output()?;
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--marks").arg("letter").arg(temp_path);
+    cmd.assert().success().stdout(predicate::str::contains("S new.txt"));
+    Ok(())
+}

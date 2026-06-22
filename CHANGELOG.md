@@ -21,3 +21,7 @@ Greenwell, used under the MIT License. See `NOTICE` for provenance.
 - Renamed the crate and binary from `lstr` to `difftree`. Behavior is otherwise
   identical to the upstream seed; git-aware tree features are the planned
   direction.
+
+## Unreleased
+
+- Added the v0.2 difftree PRD implementation foundation: serializable core model, renderer seam, JSON output, git comparison modes, status-marked terminal rendering, and a documented decisions/spec contract.
