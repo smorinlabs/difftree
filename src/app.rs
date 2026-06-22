@@ -36,8 +36,12 @@ pub struct ViewArgs {
     pub plain: bool,
     #[arg(long)]
     pub tree: bool,
+    #[arg(long, alias = "cached")]
+    pub staged: bool,
     #[arg(long)]
     pub unstaged: bool,
+    #[arg(long)]
+    pub uncommitted: bool,
     #[arg(long)]
     pub all: bool,
     #[arg(long, value_name = "A..B")]

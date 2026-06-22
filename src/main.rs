@@ -66,14 +66,20 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         ComparisonMode::Range { range: range.clone() }
     } else if let Some(reference) = &view_args.against {
         ComparisonMode::Against { reference: reference.clone() }
-    } else if view_args.all {
+    } else if view_args.uncommitted {
         ComparisonMode::Uncommitted
     } else if view_args.unstaged {
         ComparisonMode::Unstaged
     } else {
         ComparisonMode::Staged
     };
-    let tree = if matches!(mode, ComparisonMode::Staged) && !view_args.tree && !view_args.ignored {
+    let explicit_mode = view_args.uncommitted
+        || view_args.unstaged
+        || view_args.staged
+        || view_args.range.is_some()
+        || view_args.against.is_some();
+    let use_fallback = !explicit_mode && !view_args.tree && !view_args.all && !view_args.ignored;
+    let tree = if use_fallback {
         collect_default_with_fallback(&view_args.path)?
     } else {
         collect_changes(&view_args.path, mode, true)?

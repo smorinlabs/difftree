@@ -573,3 +573,45 @@ fn test_mark_scheme_letter() -> Result<(), Box<dyn std::error::Error>> {
     cmd.assert().success().stdout(predicate::str::contains("S new.txt"));
     Ok(())
 }
+
+#[test]
+fn test_uncommitted_shows_staged_and_unstaged() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "one")?;
+    Command::new("git").args(["add", "base.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    // one staged new file + one unstaged modification
+    fs::write(p.join("staged.txt"), "s")?;
+    Command::new("git").args(["add", "staged.txt"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "two")?;
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--uncommitted").arg(p);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("staged.txt"))
+        .stdout(predicate::str::contains("base.txt"));
+    Ok(())
+}
+
+#[test]
+fn test_staged_flag_does_not_fallback() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "one")?;
+    Command::new("git").args(["add", "base.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "two")?; // only unstaged
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--staged").arg(p);
+    cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
+    Ok(())
+}
