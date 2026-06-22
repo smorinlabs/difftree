@@ -615,3 +615,20 @@ fn test_staged_flag_does_not_fallback() -> Result<(), Box<dyn std::error::Error>
     cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
     Ok(())
 }
+
+#[test]
+fn test_json_includes_view_field() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("changed.txt"), "hi")?;
+    Command::new("git").args(["add", "changed.txt"]).current_dir(p).output()?;
+
+    let output = Command::cargo_bin("difftree")?.arg("--json").arg(p).output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("\"view\": \"blast-radius\""));
+    Ok(())
+}

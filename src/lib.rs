@@ -16,6 +16,13 @@ pub enum ComparisonMode {
     Against { reference: String },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum View {
+    BlastRadius,
+    AllFiles,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Churn {
     pub added: usize,
@@ -62,6 +69,7 @@ pub enum NodeKind {
 pub struct ChangeTree {
     pub schema_version: String,
     pub comparison: ComparisonMode,
+    pub view: View,
     pub root: TreeNode,
     pub summary: Rollup,
     pub fallback: Option<String>,
@@ -201,7 +209,7 @@ pub fn collect_changes(
     } else {
         scope_rel.display().to_string()
     };
-    Ok(Some(build_tree(root_name, mode, files, None)))
+    Ok(Some(build_tree(root_name, mode, View::BlastRadius, files, None)))
 }
 
 pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<ChangeTree>> {
@@ -286,6 +294,7 @@ fn add_untracked(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Resu
 fn build_tree(
     root_name: String,
     mode: ComparisonMode,
+    view: View,
     files: Vec<FileChange>,
     fallback: Option<String>,
 ) -> ChangeTree {
@@ -387,5 +396,12 @@ fn build_tree(
         rollup: summary.clone(),
         children,
     };
-    ChangeTree { schema_version: SCHEMA_VERSION.into(), comparison: mode, root, summary, fallback }
+    ChangeTree {
+        schema_version: SCHEMA_VERSION.into(),
+        comparison: mode,
+        view,
+        root,
+        summary,
+        fallback,
+    }
 }
