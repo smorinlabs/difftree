@@ -95,9 +95,15 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     } else if use_fallback {
         collect_default_with_fallback(&view_args.path)?
     } else {
-        collect_changes(&view_args.path, mode, true)?
+        let include_untracked = !matches!(mode, ComparisonMode::Range { .. });
+        collect_changes(&view_args.path, mode, include_untracked)?
     };
     let Some(tree) = tree else {
+        if view_args.json || explicit_mode {
+            anyhow::bail!(
+                "difftree: this command requires a git repository (use --plain for a plain tree, or run inside a repo)"
+            );
+        }
         return view::run(view_args, ls_colors);
     };
     if view_args.json {

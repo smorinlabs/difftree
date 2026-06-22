@@ -219,10 +219,10 @@ pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<Chan
         return Ok(staged);
     }
     let mut unstaged = collect_changes(start, ComparisonMode::Unstaged, true)?;
-    if let Some(t) = &mut unstaged {
-        t.fallback = Some("No staged changes — showing unstaged changes".to_string());
-    }
-    if unstaged.is_some() {
+    if unstaged.as_ref().is_some_and(|t| t.summary.files_changed > 0) {
+        if let Some(t) = &mut unstaged {
+            t.fallback = Some("No staged changes — showing unstaged changes".to_string());
+        }
         staged = unstaged;
     }
     Ok(staged)
@@ -258,7 +258,9 @@ fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<Fi
     let mut out = Vec::new();
     diff.foreach(
         &mut |d, _| {
-            let path = d.new_file().path().or_else(|| d.old_file().path()).unwrap_or(Path::new(""));
+            let Some(path) = d.new_file().path().or_else(|| d.old_file().path()) else {
+                return true;
+            };
             let status = match d.status() {
                 git2::Delta::Deleted => ChangeStatus::Deleted,
                 git2::Delta::Renamed => ChangeStatus::Renamed,
@@ -329,7 +331,9 @@ pub fn collect_all_files(
 
     // Build the git change map, re-keyed relative to the scope root.
     let mut changed = diff_files(&repo, &mode)?;
-    add_untracked(&repo, &mut changed)?;
+    if !matches!(mode, ComparisonMode::Range { .. }) {
+        add_untracked(&repo, &mut changed)?;
+    }
     let mut change_map: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
     for mut f in changed {
         let rel = if scope_rel.as_os_str().is_empty() {
@@ -402,11 +406,14 @@ pub fn collect_all_files_default_with_fallback(
     if has_changes(&repo, &ComparisonMode::Staged)? {
         return collect_all_files(start, ComparisonMode::Staged, opts);
     }
-    let mut tree = collect_all_files(start, ComparisonMode::Unstaged, opts)?;
-    if let Some(t) = &mut tree {
-        t.fallback = Some("No staged changes — showing unstaged changes".to_string());
+    if has_changes(&repo, &ComparisonMode::Unstaged)? {
+        let mut tree = collect_all_files(start, ComparisonMode::Unstaged, opts)?;
+        if let Some(t) = &mut tree {
+            t.fallback = Some("No staged changes — showing unstaged changes".to_string());
+        }
+        return Ok(tree);
     }
-    Ok(tree)
+    collect_all_files(start, ComparisonMode::Staged, opts)
 }
 
 fn build_tree(
@@ -442,7 +449,10 @@ fn build_tree(
     ) -> TreeNode {
         if let Some(f) = files.get(path) {
             TreeNode {
-                name: path.file_name().unwrap().to_string_lossy().to_string(),
+                name: path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string()),
                 path: path.display().to_string(),
                 kind: NodeKind::File,
                 status: f.status.clone(),

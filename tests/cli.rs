@@ -683,6 +683,56 @@ fn test_all_files_json_marks_unchanged_clean() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn test_clean_repo_no_fallback_banner() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("f.txt"), "x")?;
+    Command::new("git").args(["add", "f.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg(p);
+    cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
+    Ok(())
+}
+
+#[test]
+fn test_json_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?; // not a git repo
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--json").arg(temp_dir.path());
+    cmd.assert().failure().stderr(predicate::str::contains("requires a git repository"));
+    Ok(())
+}
+
+#[test]
+fn test_range_excludes_untracked() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("a.txt"), "1")?;
+    Command::new("git").args(["add", "a.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "c1"]).current_dir(p).output()?;
+    fs::write(p.join("b.txt"), "2")?;
+    Command::new("git").args(["add", "b.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "c2"]).current_dir(p).output()?;
+    fs::write(p.join("untracked_xyz.txt"), "u")?; // present but unrelated to the range
+
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--range").arg("HEAD~1..HEAD").arg(p);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("b.txt"))
+        .stdout(predicate::str::contains("untracked_xyz.txt").not());
+    Ok(())
+}
+
+#[test]
 fn test_all_files_depth_filter_no_spurious_fallback() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let p = temp_dir.path();

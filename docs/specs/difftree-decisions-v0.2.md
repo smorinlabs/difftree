@@ -52,9 +52,9 @@ When comparison flags are combined, difftree uses the first applicable mode in t
 | `--range <A..B>` | Compare two revisions. |
 | `--against <ref>` | Compare a ref to the working tree plus index. |
 | `--json` | Emit the JSON model. |
-| `--format <pretty|plain>` | Force terminal format. |
-| `--color <auto|always|never>`, `--no-color`, `-n`, `-C` | Color control. |
-| `--marks <symbol|letter|xy>` | Status mark scheme. |
+| `--format <pretty\|plain>` | Force terminal format. |
+| `--color <auto\|always\|never>`, `--no-color`, `-n`, `-C` | Color control. |
+| `--marks <symbol\|letter\|xy>` | Status mark scheme. |
 | `--heat <components>` | Heat components. |
 | `--show-ignored` | Show ignored entries inline. |
 | `--ignored` | Dedicated ignored-file visualizer. |
