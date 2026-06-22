@@ -53,7 +53,7 @@ Blast-radius view · full status-marked file tree · path scoping · all-files v
 ### 5.2 v1 slice (locked)
 **In:**
 - **Blast-radius view (hero)** — default = staged changes; pruned tree of touched dirs; layered impact per dir: changed-file count, +adds/−dels churn, heat indicator. Auto-fallback to **unstaged** blast radius when nothing is staged.
-- **All comparison modes:** default staged; `--unstaged` (working tree vs index); `--all` (staged+unstaged); `--range <a>..<b>`; `--against <ref>`.
+- **All comparison modes:** default staged; `--unstaged` (working tree vs index); `--uncommitted` (staged+unstaged); `--range <a>..<b>`; `--against <ref>`.
 - **Full file-tree view with status marks** (staged / unstaged / both / untracked).
 - **Plain `tree` mode + `tree` flag compatibility** (`--plain` / `--no-git`) — classic `tree` behavior on demand, even inside a git repo. difftree aims to be **mostly backwards-compatible with `tree`**: it honors `tree`'s common flags (e.g. `-d`, `-a`, `-f`, `-L`, `--dirsfirst`, `-P`/`-I`, `--prune`, `--noreport`) so existing muscle memory and scripts keep working. The **deliberate exceptions are difftree's new git-aware defaults** (bare `difftree` shows staged blast radius, not a full plain tree). See §6.8.
 - **Path/subpath scoping** (`difftree src/`).
@@ -91,7 +91,7 @@ Blast-radius view · full status-marked file tree · path scoping · all-files v
 
 ### 6.5 Views & flag surface (proposed; naming pass pending)
 - `difftree` → blast-radius (staged, auto-fallback unstaged).
-- `difftree --tree` → full status-marked file tree.
+- `difftree --tree` (alias of `--all`) → all-files view: every file, with git change marks overlaid (unchanged files shown as `Clean`).
 - `difftree --plain` (alias `--no-git`) → classic `tree` behavior: full hierarchy, no git overlay or status marks.
 - `difftree <path>` → scope to subpath.
 - `difftree --ignored` → ignored visualizer; `--show-ignored` → inline dimmed.
@@ -136,7 +136,7 @@ Blast-radius view · full status-marked file tree · path scoping · all-files v
 1. Heading/wording for the staged→unstaged auto-fallback.
 2. Heat-component flag grammar.
 3. Status symbol set + "both" marker + `--marks` flag.
-4. Comparison-flag precedence + **`tree`-flag compatibility audit**: confirm the honored `tree` flag set and resolve every collision between `tree` semantics and difftree flags (e.g. `--all` comparison vs `tree`'s `-a`; rename difftree's all-files flag, e.g. `--every-file`).
+4. Comparison-flag precedence + **`tree`-flag compatibility audit**: confirm the honored `tree` flag set and resolve every collision between `tree` semantics and difftree flags (e.g. `--all` comparison vs `tree`'s `-a`; rename difftree's all-files flag, e.g. `--every-file`). **Resolved (2026-06-21):** `--all`/`--tree` = all-files view; `--uncommitted` = combined comparison; `--staged`/`--cached` = explicit staged. The earlier `--every-file` suggestion is superseded.
 5. Full flag table with short forms.
 6. JSON schema (v1 contract — lock early).
 7. Release automation across the four channels.
