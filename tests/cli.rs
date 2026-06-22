@@ -681,3 +681,26 @@ fn test_all_files_json_marks_unchanged_clean() -> Result<(), Box<dyn std::error:
     assert!(stdout.contains("\"Clean\""));
     Ok(())
 }
+
+#[test]
+fn test_all_files_depth_filter_no_spurious_fallback() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::create_dir(p.join("src"))?;
+    fs::write(p.join("src/deep.rs"), "a")?;
+    Command::new("git").args(["add", "."]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    // Stage a change that sits BELOW the -L 1 cutoff.
+    fs::write(p.join("src/deep.rs"), "a2")?;
+    Command::new("git").args(["add", "src/deep.rs"]).current_dir(p).output()?;
+
+    // A staged change exists, so the all-files view must NOT claim "No staged changes",
+    // even though -L 1 hides the changed file from the rendered tree.
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--all").arg("-L").arg("1").arg(p);
+    cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
+    Ok(())
+}

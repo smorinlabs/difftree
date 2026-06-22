@@ -382,6 +382,33 @@ pub fn collect_all_files(
     Ok(Some(build_tree(root_name, mode, View::AllFiles, dirset, fmap, None)))
 }
 
+fn has_changes(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<bool> {
+    let mut files = diff_files(repo, mode)?;
+    add_untracked(repo, &mut files)?;
+    Ok(!files.is_empty())
+}
+
+/// All-files view with the same staged -> unstaged auto-fallback as the bare
+/// default: if there are no staged changes, overlay the unstaged comparison and
+/// label it. The fallback decision is based on the real diff, independent of any
+/// `-L`/`-d` view filters.
+pub fn collect_all_files_default_with_fallback(
+    start: &Path,
+    opts: WalkOpts,
+) -> anyhow::Result<Option<ChangeTree>> {
+    let Ok(repo) = Repository::discover(start) else {
+        return Ok(None);
+    };
+    if has_changes(&repo, &ComparisonMode::Staged)? {
+        return collect_all_files(start, ComparisonMode::Staged, opts);
+    }
+    let mut tree = collect_all_files(start, ComparisonMode::Unstaged, opts)?;
+    if let Some(t) = &mut tree {
+        t.fallback = Some("No staged changes — showing unstaged changes".to_string());
+    }
+    Ok(tree)
+}
+
 fn build_tree(
     root_name: String,
     mode: ComparisonMode,

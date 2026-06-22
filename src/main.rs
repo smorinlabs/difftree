@@ -13,8 +13,9 @@ use clap::Parser;
 #[cfg(windows)]
 use colored::control;
 use difftree::{
-    collect_all_files, collect_changes, collect_default_with_fallback, ComparisonMode,
-    JsonRenderer, OutputFormat, Renderer, TerminalRenderer,
+    collect_all_files, collect_all_files_default_with_fallback, collect_changes,
+    collect_default_with_fallback, ComparisonMode, JsonRenderer, OutputFormat, Renderer,
+    TerminalRenderer,
 };
 use lscolors::LsColors;
 
@@ -86,19 +87,11 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         dirs_only: view_args.dirs_only,
     };
     let tree = if view_args.all {
-        // All-files view honors the same staged -> unstaged fallback as the bare
-        // default when no explicit comparison flag is given (spec §3).
-        let mut t = collect_all_files(&view_args.path, mode.clone(), walk)?;
-        if !explicit_mode && t.as_ref().is_some_and(|i| i.summary.files_changed == 0) {
-            let mut u = collect_all_files(&view_args.path, ComparisonMode::Unstaged, walk)?;
-            if let Some(ui) = &mut u {
-                ui.fallback = Some("No staged changes — showing unstaged changes".to_string());
-            }
-            if u.is_some() {
-                t = u;
-            }
+        if explicit_mode {
+            collect_all_files(&view_args.path, mode, walk)?
+        } else {
+            collect_all_files_default_with_fallback(&view_args.path, walk)?
         }
-        t
     } else if use_fallback {
         collect_default_with_fallback(&view_args.path)?
     } else {
