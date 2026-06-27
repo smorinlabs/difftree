@@ -14,6 +14,7 @@ pub enum ComparisonMode {
     Uncommitted,
     Range { range: String },
     Against { reference: String },
+    Pr { merge_base: String, committed: bool },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,6 +262,15 @@ fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<Fi
             let tb = repo.revparse_single(b)?.peel_to_tree()?;
             repo.diff_tree_to_tree(Some(&ta), Some(&tb), Some(&mut opts))?
         }
+        ComparisonMode::Pr { merge_base, committed } => {
+            let mb_tree = repo.revparse_single(merge_base)?.peel_to_tree()?;
+            if *committed {
+                let head_tree = repo.head()?.peel_to_tree()?;
+                repo.diff_tree_to_tree(Some(&mb_tree), Some(&head_tree), Some(&mut opts))?
+            } else {
+                repo.diff_tree_to_workdir_with_index(Some(&mb_tree), Some(&mut opts))?
+            }
+        }
     };
     let mut out = Vec::new();
     diff.foreach(
@@ -338,7 +348,12 @@ pub fn collect_all_files(
 
     // Build the git change map, re-keyed relative to the scope root.
     let mut changed = diff_files(&repo, &mode)?;
-    if !matches!(mode, ComparisonMode::Range { .. }) {
+    let include_untracked = match &mode {
+        ComparisonMode::Range { .. } => false,
+        ComparisonMode::Pr { committed, .. } => !committed,
+        _ => true,
+    };
+    if include_untracked {
         add_untracked(&repo, &mut changed)?;
     }
     let mut change_map: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
@@ -353,6 +368,26 @@ pub fn collect_all_files(
             change_map.insert(rel, f);
         }
     }
+
+    // For Pr committed mode, build a set of untracked paths to exclude from the
+    // filesystem walk (the change_map guard above only controls status labels,
+    // not which entries the walker surfaces).
+    let untracked_rel: BTreeSet<PathBuf> =
+        if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
+            let mut u = Vec::new();
+            add_untracked(&repo, &mut u)?;
+            u.into_iter()
+                .filter_map(|f| {
+                    if scope_rel.as_os_str().is_empty() {
+                        Some(f.path)
+                    } else {
+                        f.path.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
+                    }
+                })
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
 
     // Walk the filesystem; keys are paths relative to the scope root.
     let mut builder = ignore::WalkBuilder::new(start);
@@ -374,6 +409,9 @@ pub fn collect_all_files(
             dirset.insert(rel);
         } else {
             if opts.dirs_only {
+                continue;
+            }
+            if untracked_rel.contains(&rel) {
                 continue;
             }
             let fc = change_map.get(&rel).cloned().unwrap_or_else(|| FileChange {
@@ -534,6 +572,94 @@ fn build_tree(
         root,
         summary,
         fallback,
+    }
+}
+
+#[cfg(test)]
+mod pr_tests {
+    use super::*;
+    use std::process::Command as Pcmd;
+
+    fn git(dir: &Path, args: &[&str]) {
+        Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+    }
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let o = Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    }
+    fn file_names(tree: &ChangeTree) -> Vec<String> {
+        fn walk(n: &TreeNode, out: &mut Vec<String>) {
+            if n.kind == NodeKind::File {
+                out.push(n.name.clone());
+            }
+            for c in &n.children {
+                walk(c, out);
+            }
+        }
+        let mut v = Vec::new();
+        walk(&tree.root, &mut v);
+        v
+    }
+
+    /// Sets up: c0 (base.txt) on base branch; a `feature` branch with feat.txt;
+    /// a base-only commit main2.txt that feature never sees; and an untracked
+    /// working.txt in feature's worktree. Returns (tmpdir, c0_sha).
+    fn setup_pr_repo() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("base.txt"), "x").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        let base_branch = git_out(p, &["symbolic-ref", "--short", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("feat.txt"), "y").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feat"]);
+        git(p, &["checkout", &base_branch]);
+        std::fs::write(p.join("main2.txt"), "z").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "main2"]);
+        git(p, &["checkout", "feature"]);
+        std::fs::write(p.join("working.txt"), "w").unwrap(); // untracked
+        (tmp, c0)
+    }
+
+    #[test]
+    fn pr_committed_shows_only_branch_commits() {
+        let (tmp, c0) = setup_pr_repo();
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_changes(tmp.path(), mode, false).unwrap().unwrap();
+        let names = file_names(&tree);
+        assert!(names.iter().any(|n| n == "feat.txt"), "branch commit shown");
+        assert!(!names.iter().any(|n| n == "main2.txt"), "base-only commit excluded");
+        assert!(!names.iter().any(|n| n == "working.txt"), "uncommitted excluded");
+    }
+
+    #[test]
+    fn pr_default_includes_working_tree_and_untracked() {
+        let (tmp, c0) = setup_pr_repo();
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: false };
+        let tree = collect_changes(tmp.path(), mode, true).unwrap().unwrap();
+        let names = file_names(&tree);
+        assert!(names.iter().any(|n| n == "feat.txt"), "branch commit shown");
+        assert!(names.iter().any(|n| n == "working.txt"), "untracked shown");
+        assert!(!names.iter().any(|n| n == "main2.txt"), "base-only commit excluded");
+    }
+
+    #[test]
+    fn pr_all_view_excludes_untracked_when_committed() {
+        let (tmp, c0) = setup_pr_repo();
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_all_files(tmp.path(), mode, opts).unwrap().unwrap();
+        let names = file_names(&tree);
+        // all-files view lists every file, but untracked must NOT appear under --committed
+        assert!(names.iter().any(|n| n == "base.txt"), "unchanged file listed in all-files view");
+        assert!(!names.iter().any(|n| n == "working.txt"), "untracked excluded under committed");
     }
 }
 
