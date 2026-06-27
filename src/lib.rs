@@ -187,6 +187,87 @@ struct FileChange {
     churn: Churn,
 }
 
+/// The resolved base for a `--pr` comparison.
+#[derive(Debug)]
+pub struct PrBase {
+    /// The base branch's short name (for messages), e.g. "main".
+    pub base_name: String,
+    /// The ref actually used (remote-preferred), e.g. "origin/main".
+    pub base_ref: String,
+    /// The merge-base commit SHA between the base and HEAD.
+    pub merge_base: String,
+    /// True when the merge-base equals HEAD (no divergence from base).
+    pub on_base: bool,
+}
+
+/// Reads the default branch name from `refs/remotes/origin/HEAD`, if present.
+fn origin_default_branch(repo: &Repository) -> Option<String> {
+    let r = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+    let target = r.symbolic_target()?; // e.g. "refs/remotes/origin/main"
+    target.strip_prefix("refs/remotes/origin/").map(|s| s.to_string())
+}
+
+/// Resolves the base branch for `--pr` and computes the merge-base with HEAD.
+///
+/// Base candidates (auto-detect): the `origin/HEAD` default branch, then `main`,
+/// then `master`; an explicit `base_override` replaces the candidate list. Each
+/// candidate prefers its remote-tracking ref (`origin/<name>`) over the local
+/// branch. Errors if no candidate resolves or there is no common history.
+pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Result<PrBase> {
+    let repo = Repository::discover(start)
+        .map_err(|_| anyhow::anyhow!("difftree: --pr requires a git repository"))?;
+
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(o) = base_override {
+        candidates.push(o.to_string());
+    } else {
+        if let Some(def) = origin_default_branch(&repo) {
+            candidates.push(def);
+        }
+        candidates.push("main".to_string());
+        candidates.push("master".to_string());
+    }
+    let mut seen = BTreeSet::new();
+    candidates.retain(|c| seen.insert(c.clone()));
+
+    let mut resolved: Option<(String, String, git2::Oid)> = None;
+    for name in &candidates {
+        for cand_ref in [format!("origin/{name}"), name.clone()] {
+            if let Ok(obj) = repo.revparse_single(&cand_ref) {
+                if let Ok(commit) = obj.peel_to_commit() {
+                    resolved = Some((name.clone(), cand_ref, commit.id()));
+                    break;
+                }
+            }
+        }
+        if resolved.is_some() {
+            break;
+        }
+    }
+    let (base_name, base_ref, base_oid) = resolved.ok_or_else(|| {
+        anyhow::anyhow!(
+            "difftree: could not resolve base branch (tried: {}); pass one with --pr <ref>",
+            candidates.join(", ")
+        )
+    })?;
+
+    let head_oid = repo
+        .head()
+        .and_then(|h| h.peel_to_commit())
+        .map_err(|e| anyhow::anyhow!("difftree: cannot read HEAD: {e}"))?
+        .id();
+    let mb = repo.merge_base(base_oid, head_oid).map_err(|_| {
+        anyhow::anyhow!("difftree: no common history between HEAD and base '{base_name}'")
+    })?;
+
+    Ok(PrBase {
+        base_name,
+        base_ref,
+        merge_base: mb.to_string(),
+        on_base: mb == head_oid,
+    })
+}
+
 pub fn collect_changes(
     start: &Path,
     mode: ComparisonMode,
@@ -660,6 +741,86 @@ mod pr_tests {
         // all-files view lists every file, but untracked must NOT appear under --committed
         assert!(names.iter().any(|n| n == "base.txt"), "unchanged file listed in all-files view");
         assert!(!names.iter().any(|n| n == "working.txt"), "untracked excluded under committed");
+    }
+
+    /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
+    /// Returns (tmpdir, c0_sha).
+    fn setup_named_repo(base: &str) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("base.txt"), "x").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", base]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("feat.txt"), "y").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feat"]);
+        (tmp, c0)
+    }
+
+    #[test]
+    fn resolve_auto_detects_main() {
+        let (tmp, c0) = setup_named_repo("main");
+        let b = resolve_pr_base(tmp.path(), None).unwrap();
+        assert_eq!(b.base_name, "main");
+        assert_eq!(b.merge_base, c0);
+        assert!(!b.on_base);
+    }
+
+    #[test]
+    fn resolve_falls_through_to_master() {
+        let (tmp, _c0) = setup_named_repo("master");
+        let b = resolve_pr_base(tmp.path(), None).unwrap();
+        assert_eq!(b.base_name, "master");
+    }
+
+    #[test]
+    fn resolve_bad_override_errors() {
+        let (tmp, _c0) = setup_named_repo("main");
+        let err = resolve_pr_base(tmp.path(), Some("no-such-ref")).unwrap_err();
+        assert!(err.to_string().contains("could not resolve base branch"));
+    }
+
+    #[test]
+    fn resolve_on_base_branch_sets_flag() {
+        let (tmp, c0) = setup_named_repo("main");
+        git(tmp.path(), &["checkout", "main"]);
+        let b = resolve_pr_base(tmp.path(), None).unwrap();
+        assert_eq!(b.merge_base, c0);
+        assert!(b.on_base);
+    }
+
+    #[test]
+    fn resolve_prefers_remote_tracking_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("base.txt"), "x").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        // Fabricate a remote-tracking ref at c0 without a real remote.
+        git(p, &["update-ref", "refs/remotes/origin/main", &c0]);
+        // Advance local main past origin/main.
+        std::fs::write(p.join("base.txt"), "x2").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c1"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("feat.txt"), "y").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feat"]);
+
+        let b = resolve_pr_base(p, None).unwrap();
+        assert_eq!(b.base_ref, "origin/main", "remote-tracking ref preferred over local");
+        assert_eq!(b.merge_base, c0, "merge-base taken against origin/main (c0)");
     }
 }
 
