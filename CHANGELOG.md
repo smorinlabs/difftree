@@ -43,3 +43,10 @@ Greenwell, used under the MIT License. See `NOTICE` for provenance.
 
 - `--all` no longer means the combined comparison; use `--uncommitted` for that.
 - `--tree` now shows every file (previously it rendered only changed files).
+
+### Fixed
+
+- Per-file line churn (`+N −M`) is now computed for every comparison mode
+  (previously always rendered `+0 −0`). Tracked changes use the diff's line
+  stats; untracked files count their contents as additions; directory rollups
+  and the summary footer aggregate from the real per-file numbers.

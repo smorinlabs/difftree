@@ -354,38 +354,50 @@ fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<Fi
         }
     };
     let mut out = Vec::new();
-    diff.foreach(
-        &mut |d, _| {
-            let Some(path) = d.new_file().path().or_else(|| d.old_file().path()) else {
-                return true;
-            };
-            let status = match d.status() {
-                git2::Delta::Deleted => ChangeStatus::Deleted,
-                git2::Delta::Renamed => ChangeStatus::Renamed,
-                _ => match mode {
-                    ComparisonMode::Unstaged => ChangeStatus::Unstaged,
-                    _ => ChangeStatus::Staged,
-                },
-            };
-            out.push(FileChange { path: path.to_path_buf(), status, churn: Churn::default() });
-            true
-        },
-        None,
-        None,
-        None,
-    )?;
+    for idx in 0..diff.deltas().len() {
+        let Some(delta) = diff.get_delta(idx) else { continue };
+        let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
+            continue;
+        };
+        let status = match delta.status() {
+            git2::Delta::Deleted => ChangeStatus::Deleted,
+            git2::Delta::Renamed => ChangeStatus::Renamed,
+            _ => match mode {
+                ComparisonMode::Unstaged => ChangeStatus::Unstaged,
+                _ => ChangeStatus::Staged,
+            },
+        };
+        // Per-file line stats; binary or patch-less deltas have no textual churn.
+        let churn = match git2::Patch::from_diff(&diff, idx)? {
+            Some(patch) => {
+                let (_context, added, deleted) = patch.line_stats()?;
+                Churn { added, deleted }
+            }
+            None => Churn::default(),
+        };
+        out.push(FileChange { path: path.to_path_buf(), status, churn });
+    }
     Ok(out)
 }
 fn add_untracked(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Result<()> {
+    let workdir = repo.workdir();
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
     for e in repo.statuses(Some(&mut opts))?.iter() {
         if e.status().is_wt_new() {
             if let Some(p) = e.path() {
+                // A new file's entire content counts as additions; binary or
+                // unreadable files contribute no textual churn.
+                let added = workdir
+                    .map(|w| w.join(p))
+                    .and_then(|abs| std::fs::read(abs).ok())
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .map(|s| s.lines().count())
+                    .unwrap_or(0);
                 files.push(FileChange {
                     path: PathBuf::from(p),
                     status: ChangeStatus::Untracked,
-                    churn: Churn::default(),
+                    churn: Churn { added, deleted: 0 },
                 });
             }
         }
@@ -680,6 +692,73 @@ mod pr_tests {
         let mut v = Vec::new();
         walk(&tree.root, &mut v);
         v
+    }
+
+    fn find_file_churn(tree: &ChangeTree, name: &str) -> Option<Churn> {
+        fn walk(n: &TreeNode, name: &str) -> Option<Churn> {
+            if n.kind == NodeKind::File && n.name == name {
+                return Some(n.churn.clone());
+            }
+            for c in &n.children {
+                if let Some(ch) = walk(c, name) {
+                    return Some(ch);
+                }
+            }
+            None
+        }
+        walk(&tree.root, name)
+    }
+
+    #[test]
+    fn churn_counts_added_lines_for_tracked_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("added.txt"), "a\nb\nc\n").unwrap();
+        git(p, &["add", "added.txt"]);
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let churn = find_file_churn(&tree, "added.txt").expect("added.txt present");
+        assert_eq!(churn.added, 3, "three added lines counted");
+        assert_eq!(churn.deleted, 0);
+    }
+
+    #[test]
+    fn churn_counts_deleted_lines_for_tracked_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("gone.txt"), "1\n2\n3\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["rm", "gone.txt"]);
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let churn = find_file_churn(&tree, "gone.txt").expect("gone.txt present");
+        assert_eq!(churn.added, 0);
+        assert_eq!(churn.deleted, 3, "three deleted lines counted");
+    }
+
+    #[test]
+    fn churn_counts_lines_for_untracked_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("new.txt"), "x\ny\n").unwrap(); // untracked, 2 lines
+        let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
+        let churn = find_file_churn(&tree, "new.txt").expect("new.txt present");
+        assert_eq!(churn.added, 2, "two untracked lines counted");
+        assert_eq!(churn.deleted, 0);
     }
 
     /// Sets up: c0 (base.txt) on base branch; a `feature` branch with feat.txt;
