@@ -317,7 +317,10 @@ pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<Chan
     Ok(staged)
 }
 
-fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<FileChange>> {
+/// Builds the raw git diff for a comparison mode (without per-file line stats,
+/// which are expensive to compute). Callers that only need existence can check
+/// `diff.deltas().len()`; `diff_files` adds churn on top.
+fn build_diff<'r>(repo: &'r Repository, mode: &ComparisonMode) -> anyhow::Result<git2::Diff<'r>> {
     let mut opts = DiffOptions::new();
     opts.include_untracked(false).recurse_untracked_dirs(true);
     let diff = match mode {
@@ -353,6 +356,11 @@ fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<Fi
             }
         }
     };
+    Ok(diff)
+}
+
+fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<FileChange>> {
+    let diff = build_diff(repo, mode)?;
     let mut out = Vec::new();
     for idx in 0..diff.deltas().len() {
         let Some(delta) = diff.get_delta(idx) else { continue };
@@ -525,9 +533,13 @@ pub fn collect_all_files(
 }
 
 fn has_changes(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<bool> {
-    let mut files = diff_files(repo, mode)?;
-    add_untracked(repo, &mut files)?;
-    Ok(!files.is_empty())
+    // Existence only — avoid the per-file patch/line-count work of diff_files.
+    if build_diff(repo, mode)?.deltas().len() > 0 {
+        return Ok(true);
+    }
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    Ok(repo.statuses(Some(&mut opts))?.iter().any(|e| e.status().is_wt_new()))
 }
 
 /// All-files view with the same staged -> unstaged auto-fallback as the bare
