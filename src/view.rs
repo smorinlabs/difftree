@@ -192,7 +192,7 @@ pub fn run(args: &ViewArgs, ls_colors: &LsColors) -> anyhow::Result<()> {
         };
 
         let ls_style = ls_colors.style_for_path(entry.path()).cloned().unwrap_or_default();
-        let styled_name = utils::style_name(name.as_ref(), &ls_style);
+        let styled_name = difftree::style_name(name.as_ref(), &ls_style);
 
         let final_name = if args.hyperlinks && !is_dir {
             // Canonicalize the path to get an absolute path for the URL

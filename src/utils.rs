@@ -39,80 +39,10 @@ pub fn format_permissions(mode: u32) -> String {
     format!("{user_r}{user_w}{user_x}{group_r}{group_w}{group_x}{other_r}{other_w}{other_x}")
 }
 
-/// Renders a filename with an LsColors style applied (foreground color +
-/// bold/italic/underline). Goes through the `colored` crate, so it honors the
-/// global color override / TTY detection: when color is disabled the result is
-/// the plain name.
-pub fn style_name(name: &str, style: &lscolors::Style) -> String {
-    use colored::Colorize;
-    let mut styled = name.normal();
-    if let Some(fg) = &style.foreground {
-        use lscolors::Color as LsColor;
-        let color = match fg {
-            LsColor::Black => colored::Color::Black,
-            LsColor::Red => colored::Color::Red,
-            LsColor::Green => colored::Color::Green,
-            LsColor::Yellow => colored::Color::Yellow,
-            LsColor::Blue => colored::Color::Blue,
-            LsColor::Magenta => colored::Color::Magenta,
-            LsColor::Cyan => colored::Color::Cyan,
-            LsColor::White => colored::Color::White,
-            LsColor::BrightBlack => colored::Color::BrightBlack,
-            LsColor::BrightRed => colored::Color::BrightRed,
-            LsColor::BrightGreen => colored::Color::BrightGreen,
-            LsColor::BrightYellow => colored::Color::BrightYellow,
-            LsColor::BrightBlue => colored::Color::BrightBlue,
-            LsColor::BrightMagenta => colored::Color::BrightMagenta,
-            LsColor::BrightCyan => colored::Color::BrightCyan,
-            LsColor::BrightWhite => colored::Color::BrightWhite,
-            LsColor::Fixed(_) => colored::Color::White,
-            LsColor::RGB(r, g, b) => colored::Color::TrueColor { r: *r, g: *g, b: *b },
-        };
-        styled = styled.color(color);
-    }
-    if style.font_style.bold {
-        styled = styled.bold();
-    }
-    if style.font_style.italic {
-        styled = styled.italic();
-    }
-    if style.font_style.underline {
-        styled = styled.underline();
-    }
-    styled.to_string()
-}
-
 // Unit tests for utility functions
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn style_name_applies_foreground_when_color_on() {
-        let _c = crate::test_color::guard();
-        colored::control::set_override(true);
-        let style = lscolors::Style {
-            foreground: Some(lscolors::Color::Green),
-            ..Default::default()
-        };
-        let out = style_name("file.rs", &style);
-        assert!(out.contains("\x1b[32m"), "green ANSI present when color on: {out:?}");
-        assert!(out.contains("file.rs"));
-        colored::control::unset_override();
-    }
-
-    #[test]
-    fn style_name_plain_when_color_off() {
-        let _c = crate::test_color::guard();
-        colored::control::set_override(false);
-        let style = lscolors::Style {
-            foreground: Some(lscolors::Color::Green),
-            ..Default::default()
-        };
-        let out = style_name("file.rs", &style);
-        assert_eq!(out, "file.rs", "plain when color off");
-        colored::control::unset_override();
-    }
 
     #[test]
     fn test_format_size() {

@@ -160,14 +160,3 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
 fn is_git_repo(path: &std::path::Path) -> bool {
     git2::Repository::discover(path).is_ok()
 }
-
-#[cfg(test)]
-pub(crate) mod test_color {
-    use std::sync::{Mutex, MutexGuard};
-    static LOCK: Mutex<()> = Mutex::new(());
-    /// Serializes tests that mutate the global `colored` override (a process-wide
-    /// atomic), preventing parallel tests from clobbering each other's setting.
-    pub fn guard() -> MutexGuard<'static, ()> {
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
