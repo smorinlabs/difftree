@@ -900,7 +900,8 @@ fn pr_on_base_branch_warns() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("on base branch"));
+        .stderr(predicate::str::contains("on base branch"))
+        .stdout(predicate::str::contains("working.txt"));
 }
 
 #[test]
