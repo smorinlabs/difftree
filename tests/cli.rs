@@ -905,6 +905,21 @@ fn pr_on_base_branch_warns() {
 }
 
 #[test]
+fn pr_json_emits_pr_comparison() {
+    let tmp = make_pr_repo();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("--json")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("difftree.v1"))
+        .stdout(predicate::str::contains("\"Pr\""))
+        .stdout(predicate::str::contains("feat.txt"));
+}
+
+#[test]
 fn pr_bad_ref_errors() {
     let tmp = make_pr_repo();
     Command::cargo_bin("difftree")

@@ -68,10 +68,17 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     let pr_base = if let Some(pr_opt) = &view_args.pr {
         let base = resolve_pr_base(&view_args.path, pr_opt.as_deref())?;
         if base.on_base {
-            eprintln!(
-                "difftree: on base branch '{}'; showing uncommitted changes only",
-                base.base_name
-            );
+            if view_args.committed {
+                eprintln!(
+                    "difftree: on base branch '{}'; no committed changes since base",
+                    base.base_name
+                );
+            } else {
+                eprintln!(
+                    "difftree: on base branch '{}'; showing uncommitted changes only",
+                    base.base_name
+                );
+            }
         }
         Some(base)
     } else {
