@@ -46,6 +46,15 @@ pub struct ViewArgs {
     pub range: Option<String>,
     #[arg(long, value_name = "REF")]
     pub against: Option<String>,
+    #[arg(
+        long,
+        value_name = "REF",
+        num_args = 0..=1,
+        conflicts_with_all = ["range", "against", "staged", "unstaged", "uncommitted"]
+    )]
+    pub pr: Option<Option<String>>,
+    #[arg(long, requires = "pr")]
+    pub committed: bool,
     #[arg(long, default_value = "color,bar,badge")]
     pub heat: String,
     #[arg(long, default_value_t = MarkScheme::Symbol)]

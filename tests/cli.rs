@@ -802,3 +802,17 @@ fn test_all_files_depth_filter_no_spurious_fallback() -> Result<(), Box<dyn std:
     cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
     Ok(())
 }
+
+#[test]
+fn pr_committed_requires_pr() {
+    let mut cmd = Command::cargo_bin("difftree").unwrap();
+    cmd.arg("--committed");
+    cmd.assert().failure();
+}
+
+#[test]
+fn pr_conflicts_with_against() {
+    let mut cmd = Command::cargo_bin("difftree").unwrap();
+    cmd.arg("--against").arg("main").arg("--pr");
+    cmd.assert().failure();
+}
