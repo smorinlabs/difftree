@@ -14,8 +14,8 @@ use clap::Parser;
 use colored::control;
 use difftree::{
     collect_all_files, collect_all_files_default_with_fallback, collect_changes,
-    collect_default_with_fallback, ComparisonMode, JsonRenderer, OutputFormat, Renderer,
-    TerminalRenderer,
+    collect_default_with_fallback, resolve_pr_base, ComparisonMode, JsonRenderer, OutputFormat,
+    Renderer, TerminalRenderer,
 };
 use lscolors::LsColors;
 
@@ -53,6 +53,7 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
             && !view_args.uncommitted
             && view_args.range.is_none()
             && view_args.against.is_none()
+            && view_args.pr.is_none()
             && !view_args.ignored
             && !is_git_repo(&view_args.path));
     if wants_plain_tree {
@@ -64,7 +65,22 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         return view::run(view_args, ls_colors);
     }
 
-    let mode = if let Some(range) = &view_args.range {
+    let pr_base = if let Some(pr_opt) = &view_args.pr {
+        let base = resolve_pr_base(&view_args.path, pr_opt.as_deref())?;
+        if base.on_base {
+            eprintln!(
+                "difftree: on base branch '{}'; showing uncommitted changes only",
+                base.base_name
+            );
+        }
+        Some(base)
+    } else {
+        None
+    };
+
+    let mode = if let Some(base) = &pr_base {
+        ComparisonMode::Pr { merge_base: base.merge_base.clone(), committed: view_args.committed }
+    } else if let Some(range) = &view_args.range {
         ComparisonMode::Range { range: range.clone() }
     } else if let Some(reference) = &view_args.against {
         ComparisonMode::Against { reference: reference.clone() }
@@ -79,7 +95,8 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         || view_args.unstaged
         || view_args.staged
         || view_args.range.is_some()
-        || view_args.against.is_some();
+        || view_args.against.is_some()
+        || view_args.pr.is_some();
     let use_fallback = !explicit_mode && !view_args.all && !view_args.ignored;
     let walk = difftree::WalkOpts {
         all: view_args.show_all,
@@ -96,7 +113,11 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     } else if use_fallback {
         collect_default_with_fallback(&view_args.path)?
     } else {
-        let include_untracked = !matches!(mode, ComparisonMode::Range { .. });
+        let include_untracked = match &mode {
+            ComparisonMode::Range { .. } => false,
+            ComparisonMode::Pr { committed, .. } => !committed,
+            _ => true,
+        };
         collect_changes(&view_args.path, mode, include_untracked)?
     };
     let Some(tree) = tree else {

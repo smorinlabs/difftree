@@ -816,3 +816,102 @@ fn pr_conflicts_with_against() {
     cmd.arg("--against").arg("main").arg("--pr");
     cmd.assert().failure();
 }
+
+use std::path::Path as StdPath;
+
+fn git_in(dir: &StdPath, args: &[&str]) {
+    std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+}
+
+/// main (base.txt @ c0) → feature (feat.txt) ; base advances (main2.txt) ;
+/// back on feature with an untracked working.txt.
+fn make_pr_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path();
+    git_in(p, &["init"]);
+    git_in(p, &["config", "user.email", "t@e.com"]);
+    git_in(p, &["config", "user.name", "T"]);
+    std::fs::write(p.join("base.txt"), "x").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "c0"]);
+    git_in(p, &["branch", "-M", "main"]);
+    git_in(p, &["checkout", "-b", "feature"]);
+    std::fs::write(p.join("feat.txt"), "y").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "feat"]);
+    git_in(p, &["checkout", "main"]);
+    std::fs::write(p.join("main2.txt"), "z").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "main2"]);
+    git_in(p, &["checkout", "feature"]);
+    std::fs::write(p.join("working.txt"), "w").unwrap(); // untracked
+    tmp
+}
+
+#[test]
+fn pr_default_shows_branch_and_working_not_base() {
+    let tmp = make_pr_repo();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat.txt"))
+        .stdout(predicate::str::contains("working.txt"))
+        .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_committed_excludes_working_tree() {
+    let tmp = make_pr_repo();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("--committed")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat.txt"))
+        .stdout(predicate::str::contains("working.txt").not())
+        .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_all_lists_unchanged_files() {
+    let tmp = make_pr_repo();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("--all")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("base.txt"));
+}
+
+#[test]
+fn pr_on_base_branch_warns() {
+    let tmp = make_pr_repo();
+    git_in(tmp.path(), &["checkout", "main"]);
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("on base branch"));
+}
+
+#[test]
+fn pr_bad_ref_errors() {
+    let tmp = make_pr_repo();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("does-not-exist-xyz")
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("could not resolve base branch"));
+}
