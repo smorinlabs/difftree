@@ -22,10 +22,16 @@ Greenwell, used under the MIT License. See `NOTICE` for provenance.
   identical to the upstream seed; git-aware tree features are the planned
   direction.
 
-## Unreleased
+## [0.3.0] - 2026-06-27
 
 ### Added
 
+- `--pr [<ref>]`: PR-style diff for the current branch — everything changed
+  since it diverged from the base (the merge-base, `base...HEAD` semantics).
+  The base auto-detects (`origin` default → `main` → `master`, preferring the
+  `origin/<name>` remote ref) and is overridable with `--pr <ref>`. The default
+  endpoint is the working tree (commits + staged + unstaged + untracked); add
+  `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
 - All-files view (`--all`, alias `--tree`): renders the complete directory tree
   with git change marks overlaid; unchanged files are shown as `Clean`.
 - Explicit `--staged` (alias `--cached`) comparison flag.

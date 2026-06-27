@@ -1,6 +1,6 @@
 [package]
 name = "difftree"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["smorinlabs <steve@conceptm.com>"]
 edition = "2021"
 description = "A blazingly fast, minimalist, git-aware directory tree viewer, written in Rust. An early fork of lstr."
