@@ -1,5 +1,6 @@
 //! Core difftree library: serializable model, git-backed collection, and renderers.
 
+use colored::Colorize;
 use git2::{DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,9 +90,11 @@ impl Renderer for JsonRenderer {
 }
 
 #[derive(Debug, Clone)]
-pub struct TerminalRenderer {
+pub struct TerminalRenderer<'a> {
     pub marks: MarkScheme,
     pub format: OutputFormat,
+    pub ls_colors: &'a lscolors::LsColors,
+    pub root: PathBuf,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkScheme {
@@ -105,7 +108,7 @@ pub enum OutputFormat {
     Plain,
 }
 
-impl Renderer for TerminalRenderer {
+impl Renderer for TerminalRenderer<'_> {
     fn render(&self, tree: &ChangeTree) -> anyhow::Result<String> {
         let mut out = String::new();
         if let Some(f) = &tree.fallback {
@@ -117,33 +120,61 @@ impl Renderer for TerminalRenderer {
             self.node(&mut out, child, "", idx + 1 == tree.root.children.len());
         }
         out.push_str(&format!(
-            "\n{} dirs touched · {} files changed · +{} −{}\n",
+            "\n{} dirs touched · {} files changed · {} {}\n",
             tree.summary.dirs_touched,
             tree.summary.files_changed,
-            tree.summary.churn.added,
-            tree.summary.churn.deleted
+            add_str(tree.summary.churn.added),
+            del_str(tree.summary.churn.deleted)
         ));
         Ok(out)
     }
 }
-impl TerminalRenderer {
+impl TerminalRenderer<'_> {
     fn node(&self, out: &mut String, n: &TreeNode, prefix: &str, last: bool) {
         let conn = if last { "└──" } else { "├──" };
-        let mark = mark(n, self.marks);
+        let mark_str = mark(n, self.marks);
+        let mark_render = match mark_color(&n.status) {
+            Some(c) => mark_str.color(c).to_string(),
+            None => mark_str.to_string(),
+        };
         let metric = if n.kind == NodeKind::Directory {
             format!(
-                " ({} files, +{} −{})",
-                n.rollup.files_changed, n.rollup.churn.added, n.rollup.churn.deleted
+                " ({} files, {} {})",
+                n.rollup.files_changed,
+                add_str(n.rollup.churn.added),
+                del_str(n.rollup.churn.deleted)
             )
         } else {
-            format!(" +{} −{}", n.churn.added, n.churn.deleted)
+            format!(" {} {}", add_str(n.churn.added), del_str(n.churn.deleted))
         };
-        out.push_str(&format!("{prefix}{conn} {mark} {}{metric}\n", n.name));
+        let abs = self.root.join(&n.path);
+        let style = self.ls_colors.style_for_path(&abs).cloned().unwrap_or_default();
+        let name_render = crate::style_name(&n.name, &style);
+        out.push_str(&format!("{prefix}{conn} {mark_render} {name_render}{metric}\n"));
         let next = format!("{}{}", prefix, if last { "    " } else { "│   " });
         for (idx, c) in n.children.iter().enumerate() {
             self.node(out, c, &next, idx + 1 == n.children.len());
         }
     }
+}
+fn mark_color(s: &ChangeStatus) -> Option<colored::Color> {
+    use colored::Color;
+    match s {
+        ChangeStatus::Staged => Some(Color::Green),
+        ChangeStatus::Unstaged => Some(Color::Yellow),
+        ChangeStatus::Both => Some(Color::Cyan),
+        ChangeStatus::Untracked => Some(Color::Magenta),
+        ChangeStatus::Renamed => Some(Color::Blue),
+        ChangeStatus::Deleted => Some(Color::Red),
+        ChangeStatus::Ignored => Some(Color::BrightBlack),
+        ChangeStatus::Clean => None,
+    }
+}
+fn add_str(n: usize) -> String {
+    format!("+{n}").green().to_string()
+}
+fn del_str(n: usize) -> String {
+    format!("−{n}").red().to_string()
 }
 fn mark(n: &TreeNode, s: MarkScheme) -> &'static str {
     match s {
@@ -920,7 +951,6 @@ mod pr_tests {
 /// global color override / TTY detection: when color is disabled the result is
 /// the plain name.
 pub fn style_name(name: &str, style: &lscolors::Style) -> String {
-    use colored::Colorize;
     let mut styled = name.normal();
     if let Some(fg) = &style.foreground {
         use lscolors::Color as LsColor;
@@ -990,6 +1020,117 @@ mod style_name_tests {
         let style = lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
         let out = style_name("file.rs", &style);
         assert_eq!(out, "file.rs", "plain when color off");
+        colored::control::unset_override();
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    fn sample_tree() -> ChangeTree {
+        let staged = TreeNode {
+            name: "a.rs".into(),
+            path: "a.rs".into(),
+            kind: NodeKind::File,
+            status: ChangeStatus::Staged,
+            churn: Churn { added: 3, deleted: 1 },
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+        let deleted = TreeNode {
+            name: "gone.rs".into(),
+            path: "gone.rs".into(),
+            kind: NodeKind::File,
+            status: ChangeStatus::Deleted,
+            churn: Churn { added: 0, deleted: 5 },
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+        let summary = Rollup { dirs_touched: 0, files_changed: 2, churn: Churn { added: 3, deleted: 6 } };
+        let root = TreeNode {
+            name: "repo".into(),
+            path: "".into(),
+            kind: NodeKind::Directory,
+            status: ChangeStatus::Clean,
+            churn: Churn::default(),
+            rollup: summary.clone(),
+            children: vec![staged, deleted],
+        };
+        ChangeTree {
+            schema_version: SCHEMA_VERSION.into(),
+            comparison: ComparisonMode::Staged,
+            view: View::BlastRadius,
+            root,
+            summary,
+            fallback: None,
+        }
+    }
+
+    #[test]
+    fn color_on_emits_ansi_for_marks_and_churn() {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(true);
+        let lsc = lscolors::LsColors::empty();
+        let r = TerminalRenderer {
+            marks: MarkScheme::Symbol,
+            format: OutputFormat::Pretty,
+            ls_colors: &lsc,
+            root: std::path::PathBuf::from("/no/such/root"),
+        };
+        let out = r.render(&sample_tree()).unwrap();
+        assert!(out.contains("\x1b[32m"), "green present (staged mark / +N): {out:?}");
+        assert!(out.contains("\x1b[31m"), "red present (deleted mark / −M): {out:?}");
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn color_off_is_plain() {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(false);
+        let lsc = lscolors::LsColors::empty();
+        let r = TerminalRenderer {
+            marks: MarkScheme::Symbol,
+            format: OutputFormat::Pretty,
+            ls_colors: &lsc,
+            root: std::path::PathBuf::from("/no/such/root"),
+        };
+        let out = r.render(&sample_tree()).unwrap();
+        assert!(!out.contains("\x1b["), "no ANSI when color off: {out:?}");
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn filenames_use_lscolors() {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(true);
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "x").unwrap();
+        let lsc = lscolors::LsColors::from_string("*.rs=35"); // magenta foreground
+        let r = TerminalRenderer {
+            marks: MarkScheme::Symbol,
+            format: OutputFormat::Pretty,
+            ls_colors: &lsc,
+            root: tmp.path().to_path_buf(),
+        };
+        let out = r.render(&sample_tree()).unwrap();
+        assert!(out.contains("\x1b[35m"), "filename magenta from LS_COLORS: {out:?}");
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn deleted_missing_path_does_not_panic() {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(true);
+        let lsc = lscolors::LsColors::empty();
+        let r = TerminalRenderer {
+            marks: MarkScheme::Symbol,
+            format: OutputFormat::Pretty,
+            ls_colors: &lsc,
+            root: std::path::PathBuf::from("/no/such/root"),
+        };
+        // gone.rs does not exist under root → style lookup must fall back, not panic.
+        let _ = r.render(&sample_tree()).unwrap();
         colored::control::unset_override();
     }
 }

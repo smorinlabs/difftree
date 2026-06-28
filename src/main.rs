@@ -152,7 +152,12 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
             MarkScheme::Letter => difftree::MarkScheme::Letter,
             MarkScheme::Xy => difftree::MarkScheme::Xy,
         };
-        print!("{}", TerminalRenderer { marks, format }.render(&tree)?);
+        let render_root =
+            std::fs::canonicalize(&view_args.path).unwrap_or_else(|_| view_args.path.clone());
+        print!(
+            "{}",
+            TerminalRenderer { marks, format, ls_colors, root: render_root }.render(&tree)?
+        );
     }
     Ok(())
 }
