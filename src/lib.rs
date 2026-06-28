@@ -376,7 +376,15 @@ pub fn collect_changes(
     if include_untracked {
         add_untracked(&repo, &mut files)?;
     }
-    files = files.into_iter().filter_map(|f| scoped_file_change(f, scope_rel)).collect();
+    let committed_head_tree = head_tree_for_committed_pr(&repo, &mode)?;
+    files = files
+        .into_iter()
+        .filter_map(|f| {
+            let mut f = scoped_file_change(f, scope_rel)?;
+            normalize_committed_scoped_rename(&mut f, scope_rel, committed_head_tree.as_ref());
+            Some(f)
+        })
+        .collect();
     let root_name = if scope_rel.as_os_str().is_empty() {
         workdir.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string()
     } else {
@@ -906,6 +914,39 @@ fn strip_repo_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
     Some(stripped)
 }
 
+fn head_tree_for_committed_pr<'repo>(
+    repo: &'repo Repository,
+    mode: &ComparisonMode,
+) -> anyhow::Result<Option<git2::Tree<'repo>>> {
+    if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
+        Ok(Some(repo.head()?.peel_to_tree()?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn tree_contains_repo_path(tree: &git2::Tree<'_>, path: &Path) -> bool {
+    let repo_path = repo_path_segments(path).join("/");
+    !repo_path.is_empty() && tree.get_path(Path::new(&repo_path)).is_ok()
+}
+
+fn normalize_committed_scoped_rename(
+    f: &mut FileChange,
+    scope_rel: &Path,
+    head_tree: Option<&git2::Tree<'_>>,
+) {
+    if f.status != ChangeStatus::Renamed {
+        return;
+    }
+    let Some(head_tree) = head_tree else { return };
+    let repo_path =
+        if scope_rel.as_os_str().is_empty() { f.path.clone() } else { scope_rel.join(&f.path) };
+    if !tree_contains_repo_path(head_tree, &repo_path) {
+        f.status = ChangeStatus::Deleted;
+        f.old_path = None;
+    }
+}
+
 fn scoped_file_change(mut f: FileChange, scope_rel: &Path) -> Option<FileChange> {
     if scope_rel.as_os_str().is_empty() {
         return Some(f);
@@ -959,6 +1000,7 @@ pub fn collect_all_files(
         repo.workdir().ok_or_else(|| anyhow::anyhow!("bare repositories are not supported"))?;
     let scope = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
     let scope_rel = scope.strip_prefix(workdir).unwrap_or(Path::new("")).to_path_buf();
+    let committed_head_tree = head_tree_for_committed_pr(&repo, &mode)?;
 
     // Build the git change map, re-keyed relative to the scope root.
     let mut changed = diff_files(&repo, &mode)?;
@@ -975,7 +1017,8 @@ pub fn collect_all_files(
     }
     let mut change_map: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
     for f in changed {
-        if let Some(f) = scoped_file_change(f, &scope_rel) {
+        if let Some(mut f) = scoped_file_change(f, &scope_rel) {
+            normalize_committed_scoped_rename(&mut f, &scope_rel, committed_head_tree.as_ref());
             change_map.insert(f.path.clone(), f);
         }
     }
