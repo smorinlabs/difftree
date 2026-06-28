@@ -1285,15 +1285,19 @@ mod pr_tests {
     }
 
     fn render_plain_letters(tree: &ChangeTree, root: &Path) -> String {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(false);
         let lsc = lscolors::LsColors::empty();
-        TerminalRenderer {
+        let out = TerminalRenderer {
             marks: MarkScheme::Letter,
             format: OutputFormat::Plain,
             ls_colors: &lsc,
             root: root.to_path_buf(),
         }
         .render(tree)
-        .unwrap()
+        .unwrap();
+        colored::control::unset_override();
+        out
     }
 
     #[test]
