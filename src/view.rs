@@ -6,6 +6,7 @@ use crate::icons;
 use crate::sort;
 use crate::utils;
 use colored::{control, Colorize};
+use difftree::SCHEMA_VERSION;
 use ignore::{self, WalkBuilder};
 use lscolors::LsColors;
 use serde::Serialize;
@@ -32,7 +33,7 @@ struct PlainTreeSummary {
 struct PlainTreeNode {
     name: String,
     path: String,
-    kind: &'static str,
+    node_kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     git_status: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,12 +319,12 @@ fn collect_plain_tree_json(args: &ViewArgs) -> anyhow::Result<PlainTreeJson> {
     );
 
     Ok(PlainTreeJson {
-        schema_version: "difftree.v1",
+        schema_version: SCHEMA_VERSION,
         view: "plain-tree",
         root: PlainTreeNode {
             name: args.path.display().to_string(),
             path: String::new(),
-            kind: "Directory",
+            node_kind: "Directory",
             git_status: None,
             size_bytes: None,
             permissions: root_permissions_json(args)?,
@@ -389,7 +390,7 @@ fn plain_json_node(
     PlainTreeNode {
         name: entry.file_name().to_string_lossy().to_string(),
         path: rel.to_string_lossy().to_string(),
-        kind: if is_dir { "Directory" } else { "File" },
+        node_kind: if is_dir { "Directory" } else { "File" },
         git_status: git_status_json(entry.path(), status_info),
         size_bytes: if args.size && !is_dir { metadata.as_ref().map(|m| m.len()) } else { None },
         permissions: if args.permissions {
