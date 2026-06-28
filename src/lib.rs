@@ -2054,6 +2054,29 @@ pub(crate) mod test_color {
 mod style_name_tests {
     use super::*;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     #[test]
     fn style_name_applies_foreground_when_color_on() {
         let _c = crate::test_color::guard();
@@ -2081,6 +2104,7 @@ mod style_name_tests {
     fn style_name_preserves_fixed_256_color_as_truecolor() {
         let _c = crate::test_color::guard();
         colored::control::set_override(true);
+        let _env = EnvVarGuard::set("COLORTERM", "truecolor");
         let style =
             lscolors::Style { foreground: Some(lscolors::Color::Fixed(208)), ..Default::default() };
         let out = style_name("file.rs", &style);
