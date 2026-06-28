@@ -845,7 +845,14 @@ fn pr_conflicts_with_against() {
 use std::path::Path as StdPath;
 
 fn git_in(dir: &StdPath, args: &[&str]) {
-    std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+    let output = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// main (base.txt @ c0) → feature (feat.txt) ; base advances (main2.txt) ;

@@ -4,6 +4,7 @@ use colored::Colorize;
 use git2::{DiffFindOptions, DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: &str = "difftree.v1";
@@ -676,29 +677,40 @@ fn add_conflicted(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Res
     }
     Ok(())
 }
-fn status_and_churn_for_untracked(abs: &Path) -> (ChangeStatus, Churn) {
-    match std::fs::read(abs) {
-        Ok(bytes) => {
-            if bytes.contains(&0) {
-                return (ChangeStatus::Untracked, Churn::default());
-            }
-            let added = String::from_utf8(bytes).map(|s| s.lines().count()).unwrap_or(0);
-            (ChangeStatus::Untracked, Churn { added, deleted: 0 })
+fn count_text_lines_streaming(abs: &Path) -> std::io::Result<Option<usize>> {
+    let file = std::fs::File::open(abs)?;
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    let mut lines = 0;
+    loop {
+        buf.clear();
+        let read = reader.read_until(b'\n', &mut buf)?;
+        if read == 0 {
+            break;
         }
+        if buf.contains(&0) || std::str::from_utf8(&buf).is_err() {
+            return Ok(None);
+        }
+        lines += 1;
+    }
+    Ok(Some(lines))
+}
+
+fn status_and_churn_for_untracked(abs: &Path) -> (ChangeStatus, Churn) {
+    match count_text_lines_streaming(abs) {
+        Ok(Some(added)) => (ChangeStatus::Untracked, Churn { added, deleted: 0 }),
+        Ok(None) => (ChangeStatus::Untracked, Churn::default()),
         Err(_) => (ChangeStatus::Unreadable, Churn::default()),
     }
 }
 
-fn add_untracked_from_workdir_walk(
-    repo: &Repository,
-    files: &mut Vec<FileChange>,
-) -> anyhow::Result<()> {
+fn untracked_paths_from_workdir_walk(repo: &Repository) -> anyhow::Result<BTreeSet<PathBuf>> {
     let Some(workdir) = repo.workdir() else {
-        return Ok(());
+        return Ok(BTreeSet::new());
     };
     let mut tracked = BTreeSet::new();
     add_index_paths(repo, &mut tracked)?;
-    let mut existing: BTreeSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let mut out = BTreeSet::new();
     let mut builder = ignore::WalkBuilder::new(workdir);
     builder.hidden(false).git_ignore(true).filter_entry(|entry| entry.file_name() != ".git");
     for result in builder.build() {
@@ -708,13 +720,44 @@ fn add_untracked_from_workdir_walk(
         }
         let Ok(rel) = entry.path().strip_prefix(workdir) else { continue };
         let rel = rel.to_path_buf();
-        if tracked.contains(&rel) || existing.contains(&rel) {
+        if tracked.contains(&rel) || repo.status_should_ignore(&rel).unwrap_or(false) {
             continue;
         }
-        if repo.status_should_ignore(&rel).unwrap_or(false) {
+        out.insert(rel);
+    }
+    Ok(out)
+}
+
+fn untracked_paths(repo: &Repository) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true).include_unreadable(true);
+    let statuses = match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses,
+        Err(err) if err.code() == git2::ErrorCode::Locked => {
+            return untracked_paths_from_workdir_walk(repo);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    Ok(statuses
+        .iter()
+        .filter_map(|e| if e.status().is_wt_new() { e.path().map(PathBuf::from) } else { None })
+        .collect())
+}
+
+fn add_untracked_from_workdir_walk(
+    repo: &Repository,
+    files: &mut Vec<FileChange>,
+) -> anyhow::Result<()> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    let untracked = untracked_paths_from_workdir_walk(repo)?;
+    let mut existing: BTreeSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    for rel in untracked {
+        if existing.contains(&rel) {
             continue;
         }
-        let (status, churn) = status_and_churn_for_untracked(entry.path());
+        let (status, churn) = status_and_churn_for_untracked(&workdir.join(&rel));
         files.push(FileChange { path: rel.clone(), old_path: None, status, churn });
         existing.insert(rel);
     }
@@ -821,14 +864,13 @@ pub fn collect_all_files(
     // not which entries the walker surfaces).
     let untracked_rel: BTreeSet<PathBuf> =
         if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
-            let mut u = Vec::new();
-            add_untracked(&repo, &mut u)?;
-            u.into_iter()
+            untracked_paths(&repo)?
+                .into_iter()
                 .filter_map(|f| {
                     if scope_rel.as_os_str().is_empty() {
-                        Some(f.path)
+                        Some(f)
                     } else {
-                        f.path.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
+                        f.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
                     }
                 })
                 .collect()
@@ -1061,10 +1103,34 @@ mod pr_tests {
     use std::process::Command as Pcmd;
 
     fn git(dir: &Path, args: &[&str]) {
-        Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        let output = Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fn git_fails(dir: &Path, args: &[&str]) {
+        let output = Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            !output.status.success(),
+            "git {:?} unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     fn git_out(dir: &Path, args: &[&str]) -> String {
         let o = Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            o.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
         String::from_utf8(o.stdout).unwrap().trim().to_string()
     }
     fn file_names(tree: &ChangeTree) -> Vec<String> {
@@ -1203,6 +1269,25 @@ mod pr_tests {
 
         let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
         let node = find_file_node(&tree, "binary.dat").expect("binary.dat present");
+
+        assert_eq!(node.status, ChangeStatus::Untracked);
+        assert_eq!(node.churn, Churn::default());
+    }
+
+    #[test]
+    fn untracked_invalid_utf8_file_has_zero_churn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("invalid.txt"), [0xff, b'\n']).unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
+        let node = find_file_node(&tree, "invalid.txt").expect("invalid.txt present");
 
         assert_eq!(node.status, ChangeStatus::Untracked);
         assert_eq!(node.churn, Churn::default());
@@ -1464,7 +1549,7 @@ mod pr_tests {
         git(p, &["checkout", "main"]);
         std::fs::write(p.join("conflict.txt"), "master\n").unwrap();
         git(p, &["commit", "-am", "master"]);
-        git(p, &["merge", "feature"]);
+        git_fails(p, &["merge", "feature"]);
 
         let tree = collect_changes(p, ComparisonMode::Uncommitted, true).unwrap().unwrap();
         let out = render_plain_letters(&tree, p);
@@ -1716,6 +1801,37 @@ mod pr_tests {
 /// bold/italic/underline). Goes through the `colored` crate, so it honors the
 /// global color override / TTY detection: when color is disabled the result is
 /// the plain name.
+fn xterm_fixed_color_to_rgb(n: u8) -> (u8, u8, u8) {
+    const ANSI16: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if n < 16 {
+        return ANSI16[n as usize];
+    }
+    if n < 232 {
+        let n = n - 16;
+        let scale = [0, 95, 135, 175, 215, 255];
+        return (scale[(n / 36) as usize], scale[((n / 6) % 6) as usize], scale[(n % 6) as usize]);
+    }
+    let gray = 8 + (n - 232) * 10;
+    (gray, gray, gray)
+}
+
 pub fn style_name(name: &str, style: &lscolors::Style) -> String {
     let mut styled = name.normal();
     if let Some(fg) = &style.foreground {
@@ -1737,7 +1853,10 @@ pub fn style_name(name: &str, style: &lscolors::Style) -> String {
             LsColor::BrightMagenta => colored::Color::BrightMagenta,
             LsColor::BrightCyan => colored::Color::BrightCyan,
             LsColor::BrightWhite => colored::Color::BrightWhite,
-            LsColor::Fixed(_) => colored::Color::White,
+            LsColor::Fixed(n) => {
+                let (r, g, b) = xterm_fixed_color_to_rgb(*n);
+                colored::Color::TrueColor { r, g, b }
+            }
             LsColor::RGB(r, g, b) => colored::Color::TrueColor { r: *r, g: *g, b: *b },
         };
         styled = styled.color(color);
@@ -1788,6 +1907,20 @@ mod style_name_tests {
             lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
         let out = style_name("file.rs", &style);
         assert_eq!(out, "file.rs", "plain when color off");
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn style_name_preserves_fixed_256_color_as_truecolor() {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(true);
+        let style =
+            lscolors::Style { foreground: Some(lscolors::Color::Fixed(208)), ..Default::default() };
+        let out = style_name("file.rs", &style);
+        assert!(
+            out.contains("\x1b[38;2;255;135;0m"),
+            "fixed 208 approximated to orange truecolor: {out:?}"
+        );
         colored::control::unset_override();
     }
 }
@@ -1913,7 +2046,14 @@ mod all_files_tests {
     use std::process::Command as Pcmd;
 
     fn git(dir: &Path, args: &[&str]) {
-        Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        let output = Pcmd::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
