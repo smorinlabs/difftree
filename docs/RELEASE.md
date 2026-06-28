@@ -16,9 +16,11 @@ push to main ──► release-please.yml ──► opens/updates a "Release PR"
    merge the Release PR ──► pushes a vX.Y.Z tag ──► publish.yml ──► crates.io
 ```
 
-- `fix:` → patch (0.3.0 → 0.3.1); `feat:` → minor while < 1.0 (0.3.0 → 0.4.0);
-  `feat!:` / `BREAKING CHANGE:` → major. `chore:`/`docs:`/`ci:`/`test:` do not
-  trigger a release. Rules live in [`release-please-config.json`](../release-please-config.json).
+- `fix:` → patch (0.3.0 → 0.3.1); `feat:` → minor (0.3.0 → 0.4.0). While the
+  crate is pre-1.0, `bump-minor-pre-major` caps breaking changes (`feat!:` /
+  `BREAKING CHANGE:`) at a **minor** bump too — they bump major only once the
+  crate reaches 1.0. `chore:`/`docs:`/`ci:`/`test:` do not trigger a release.
+  Rules live in [`release-please-config.json`](../release-please-config.json).
 - `publish.yml` refuses to ship unless the tag is reachable from `main` and the
   tag version matches `Cargo.toml`, then publishes via crates.io **Trusted
   Publishing** (OIDC) — no long-lived registry token.
