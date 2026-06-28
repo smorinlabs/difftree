@@ -632,7 +632,7 @@ fn file_changes_from_diff(
         let churn = if status == ChangeStatus::Unreadable {
             Churn::default()
         } else {
-            match git2::Patch::from_diff(&diff, idx)? {
+            match git2::Patch::from_diff(diff, idx)? {
                 Some(patch) => {
                     let (_context, added, deleted) = patch.line_stats()?;
                     Churn { added, deleted }
@@ -1008,11 +1008,12 @@ pub fn collect_all_files(
     }
     for (rel, fc) in change_map {
         visible_files.insert(rel.clone());
-        if !opts.dirs_only {
-            if !fmap.contains_key(&rel) {
-                add_ancestor_dirs(&rel, &mut dirset);
-                fmap.insert(rel, fc);
-            }
+        if opts.dirs_only {
+            continue;
+        }
+        if let std::collections::btree_map::Entry::Vacant(entry) = fmap.entry(rel) {
+            add_ancestor_dirs(entry.key(), &mut dirset);
+            entry.insert(fc);
         }
     }
     if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
