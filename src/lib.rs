@@ -874,16 +874,48 @@ fn add_ancestor_dirs(path: &Path, dirset: &mut BTreeSet<PathBuf>) {
     }
 }
 
+fn repo_path_segments(path: &Path) -> Vec<String> {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .map(str::to_string)
+        .collect()
+}
+
+fn strip_repo_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    if prefix.as_os_str().is_empty() {
+        return Some(path.to_path_buf());
+    }
+
+    let path_segments = repo_path_segments(path);
+    let prefix_segments = repo_path_segments(prefix);
+    if prefix_segments.is_empty() {
+        return Some(path.to_path_buf());
+    }
+    if path_segments.len() < prefix_segments.len()
+        || path_segments.iter().zip(&prefix_segments).any(|(path, prefix)| path != prefix)
+    {
+        return None;
+    }
+
+    let mut stripped = PathBuf::new();
+    for segment in &path_segments[prefix_segments.len()..] {
+        stripped.push(segment);
+    }
+    Some(stripped)
+}
+
 fn scoped_file_change(mut f: FileChange, scope_rel: &Path) -> Option<FileChange> {
     if scope_rel.as_os_str().is_empty() {
         return Some(f);
     }
 
-    if f.path.starts_with(scope_rel) {
-        f.path = f.path.strip_prefix(scope_rel).ok()?.to_path_buf();
+    if let Some(path_rel) = strip_repo_prefix(&f.path, scope_rel) {
+        f.path = path_rel;
         if let Some(old_path) = &mut f.old_path {
-            if let Ok(old_rel) = old_path.strip_prefix(scope_rel) {
-                *old_path = old_rel.to_path_buf();
+            if let Some(old_rel) = strip_repo_prefix(old_path, scope_rel) {
+                *old_path = old_rel;
             }
         }
         return Some(f);
@@ -891,8 +923,8 @@ fn scoped_file_change(mut f: FileChange, scope_rel: &Path) -> Option<FileChange>
 
     if f.status == ChangeStatus::Renamed {
         if let Some(old_path) = f.old_path.take() {
-            if let Ok(old_rel) = old_path.strip_prefix(scope_rel) {
-                f.path = old_rel.to_path_buf();
+            if let Some(old_rel) = strip_repo_prefix(&old_path, scope_rel) {
+                f.path = old_rel;
                 f.status = ChangeStatus::Deleted;
                 return Some(f);
             }
@@ -959,7 +991,7 @@ pub fn collect_all_files(
                     if scope_rel.as_os_str().is_empty() {
                         Some(f)
                     } else {
-                        f.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
+                        strip_repo_prefix(&f, &scope_rel)
                     }
                 })
                 .collect()
@@ -1857,6 +1889,22 @@ mod pr_tests {
         assert_eq!(node.path, "a.txt");
         assert!(out.contains("D a.txt"), "{out}");
         assert!(!out.contains("other/a.txt"), "{out}");
+    }
+
+    #[test]
+    fn scoped_rename_moved_out_normalizes_scope_separators() {
+        let change = FileChange {
+            path: PathBuf::from("other/a.txt"),
+            old_path: Some(PathBuf::from("src/nested/a.txt")),
+            status: ChangeStatus::Renamed,
+            churn: Churn::default(),
+        };
+
+        let scoped = scoped_file_change(change, Path::new("src\\nested")).unwrap();
+
+        assert_eq!(scoped.status, ChangeStatus::Deleted);
+        assert_eq!(scoped.path, PathBuf::from("a.txt"));
+        assert_eq!(scoped.old_path, None);
     }
 
     /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
