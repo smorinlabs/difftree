@@ -38,6 +38,9 @@ Greenwell, used under the MIT License. See `NOTICE` for provenance.
 - `--uncommitted` comparison (staged + unstaged + untracked vs HEAD), renamed
   from the previous `--all` comparison meaning.
 - `view` field (`blast-radius` | `all-files`) in the `--json` model.
+- Colorized comparison views: status marks (by git state), `+N` green / `−M` red
+  churn, and filenames via `LS_COLORS`. Honors `--color`/`--force-color`/`NO_COLOR`
+  and auto-disables when piped.
 
 ### Changed
 
