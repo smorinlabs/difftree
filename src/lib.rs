@@ -1099,16 +1099,29 @@ fn path_from_segments(segments: &[String]) -> PathBuf {
     out
 }
 
+#[cfg(windows)]
 fn path_prefix_segments(path: &Path) -> Vec<String> {
     repo_path_segments(path).into_iter().filter(|segment| segment != "?").collect()
 }
 
+#[cfg(not(windows))]
+fn path_prefix_segments(path: &Path) -> Vec<String> {
+    repo_path_segments(path)
+}
+
 fn segments_start_with(path: &[String], prefix: &[String]) -> bool {
     path.len() >= prefix.len()
-        && path
-            .iter()
-            .zip(prefix)
-            .all(|(path, prefix)| path == prefix || path.eq_ignore_ascii_case(prefix))
+        && path.iter().zip(prefix).all(|(path, prefix)| path_segments_equal(path, prefix))
+}
+
+#[cfg(windows)]
+fn path_segments_equal(path: &str, prefix: &str) -> bool {
+    path == prefix || path.eq_ignore_ascii_case(prefix)
+}
+
+#[cfg(not(windows))]
+fn path_segments_equal(path: &str, prefix: &str) -> bool {
+    path == prefix
 }
 
 fn scope_relative_path(scope: &Path, workdir: &Path) -> PathBuf {
@@ -2255,12 +2268,31 @@ mod pr_tests {
         assert_eq!(scoped.old_path, None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn scope_relative_path_handles_windows_verbatim_prefix() {
         let scope = Path::new(r"\\?\C:\runner\_work\difftree\difftree\src");
         let workdir = Path::new(r"C:\runner\_work\difftree\difftree");
 
         assert_eq!(scope_relative_path(scope, workdir), PathBuf::from("src"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn scope_relative_path_uses_strict_prefix_matching_on_non_windows() {
+        let scope = Path::new("/tmp/Repo/src");
+        let workdir = Path::new("/tmp/repo");
+
+        assert_eq!(scope_relative_path(scope, workdir), PathBuf::new());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn scope_relative_path_preserves_question_mark_segments_on_non_windows() {
+        let scope = Path::new("/tmp/?/repo/src");
+        let workdir = Path::new("/tmp/repo");
+
+        assert_eq!(scope_relative_path(scope, workdir), PathBuf::new());
     }
 
     /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
