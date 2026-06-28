@@ -540,7 +540,7 @@ pub fn collect_changes(
     let workdir =
         repo.workdir().ok_or_else(|| anyhow::anyhow!("bare repositories are not supported"))?;
     let scope = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    let scope_rel = scope.strip_prefix(workdir).unwrap_or(Path::new(""));
+    let scope_rel = scope_relative_path(&scope, workdir);
     let effective = mode.clone();
     let mut files = diff_files(&repo, &effective)?;
     if includes_worktree_statuses(&mode) {
@@ -553,8 +553,8 @@ pub fn collect_changes(
     files = files
         .into_iter()
         .filter_map(|f| {
-            let mut f = scoped_file_change(f, scope_rel)?;
-            normalize_committed_scoped_rename(&mut f, scope_rel, committed_head_tree.as_ref());
+            let mut f = scoped_file_change(f, &scope_rel)?;
+            normalize_committed_scoped_rename(&mut f, &scope_rel, committed_head_tree.as_ref());
             Some(f)
         })
         .collect();
@@ -1091,6 +1091,40 @@ fn repo_path_segments(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn path_from_segments(segments: &[String]) -> PathBuf {
+    let mut out = PathBuf::new();
+    for segment in segments {
+        out.push(segment);
+    }
+    out
+}
+
+fn path_prefix_segments(path: &Path) -> Vec<String> {
+    repo_path_segments(path).into_iter().filter(|segment| segment != "?").collect()
+}
+
+fn segments_start_with(path: &[String], prefix: &[String]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix)
+            .all(|(path, prefix)| path == prefix || path.eq_ignore_ascii_case(prefix))
+}
+
+fn scope_relative_path(scope: &Path, workdir: &Path) -> PathBuf {
+    if let Ok(rel) = scope.strip_prefix(workdir) {
+        return rel.to_path_buf();
+    }
+
+    let scope_segments = path_prefix_segments(scope);
+    let workdir_segments = path_prefix_segments(workdir);
+    if segments_start_with(&scope_segments, &workdir_segments) {
+        path_from_segments(&scope_segments[workdir_segments.len()..])
+    } else {
+        PathBuf::new()
+    }
+}
+
 fn strip_repo_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
     if prefix.as_os_str().is_empty() {
         return Some(path.to_path_buf());
@@ -1107,11 +1141,7 @@ fn strip_repo_prefix(path: &Path, prefix: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let mut stripped = PathBuf::new();
-    for segment in &path_segments[prefix_segments.len()..] {
-        stripped.push(segment);
-    }
-    Some(stripped)
+    Some(path_from_segments(&path_segments[prefix_segments.len()..]))
 }
 
 fn head_tree_for_committed_pr<'repo>(
@@ -1201,7 +1231,7 @@ pub fn collect_all_files(
     let workdir =
         repo.workdir().ok_or_else(|| anyhow::anyhow!("bare repositories are not supported"))?;
     let scope = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    let scope_rel = scope.strip_prefix(workdir).unwrap_or(Path::new("")).to_path_buf();
+    let scope_rel = scope_relative_path(&scope, workdir);
     let committed_head_tree = head_tree_for_committed_pr(&repo, &mode)?;
 
     // Build the git change map, re-keyed relative to the scope root.
@@ -2223,6 +2253,14 @@ mod pr_tests {
         assert_eq!(scoped.status, ChangeStatus::Deleted);
         assert_eq!(scoped.path, PathBuf::from("a.txt"));
         assert_eq!(scoped.old_path, None);
+    }
+
+    #[test]
+    fn scope_relative_path_handles_windows_verbatim_prefix() {
+        let scope = Path::new(r"\\?\C:\runner\_work\difftree\difftree\src");
+        let workdir = Path::new(r"C:\runner\_work\difftree\difftree");
+
+        assert_eq!(scope_relative_path(scope, workdir), PathBuf::from("src"));
     }
 
     /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
