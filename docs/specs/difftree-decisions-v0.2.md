@@ -65,13 +65,48 @@ When comparison flags are combined, difftree uses the first applicable mode in t
 | `-P <pattern>` / `-I <pattern>` | Reserved tree-compatible include/exclude patterns. |
 | `--prune`, `--dirsfirst`, `--noreport`, `--filelimit` | Tree-compatible controls. |
 
+## Summary frame
+
+Every comparison terminal view renders one context header above the tree, after any fallback line:
+
+| Mode | Header |
+| --- | --- |
+| `--pr` | `PR: {base_ref}...{head_label} · working tree` |
+| `--pr --committed` | `PR: {base_ref}...{head_label} · committed` |
+| `--against <ref>` | `Against: {ref}...working tree` |
+| `--range <A..B>` | `Range: {A}..{B}` |
+| `--staged` | `Staged changes` |
+| `--unstaged` | `Unstaged changes` |
+| `--uncommitted` | `Uncommitted changes (staged + unstaged)` |
+
+`head_label` is the current branch name. Detached HEAD uses the shortest available
+seven-character commit SHA. When `--pr` is already on the base branch, the header is
+`PR: {base_ref}...{head_label} · on base branch (uncommitted only)`.
+
+The footer keeps the existing `dirs touched` and churn segments. Its file-count
+segment is kind-aware:
+
+- Single kind: `N files modified`, `N files added`, etc.
+- Mixed kinds: `N files changed (a added · b modified · c deleted · ...)`.
+- Empty changes: `0 files changed`.
+
+Display order is `added`, `modified`, `deleted`, `renamed`, `copied`,
+`typechanged`, `conflicted`, then `unreadable`; zero counts are omitted.
+
 ## JSON schema
 
-The v1 schema is versioned by `schema_version: "difftree.v1"` and contains:
+The v2 schema is versioned by `schema_version: "difftree.v2"`.
+
+Schema decision: bump from v1 rather than add a silent default. v1 already used
+`kind` for structural node type, while the comparison model now needs `kind` for
+the git delta kind. In v2, structural node type is renamed to `node_kind`, and
+changed file nodes expose the delta kind as `kind`.
 
 - `comparison`: the active comparison mode and parameters.
 - `view`: the active view, `"blast-radius"` or `"all-files"`.
 - `fallback`: null or the exact fallback heading.
-- `root`: recursive tree nodes with `name`, `path`, `kind`, `status`, `churn`, `rollup`, and `children`.
+- `root`: recursive tree nodes with `name`, `path`, `node_kind`, optional `old_path`,
+  optional `kind`, `status`, `churn`, `rollup`, and `children`.
+- `kind`: present on changed file nodes only; values are `added`, `modified`,
+  `deleted`, `renamed`, `copied`, `typechanged`, `conflicted`, and `unreadable`.
 - `summary`: repository/view-level `dirs_touched`, `files_changed`, and `churn` totals.
-

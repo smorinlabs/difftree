@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: &str = "difftree.v1";
+pub const SCHEMA_VERSION: &str = "difftree.v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComparisonMode {
@@ -55,13 +55,29 @@ pub enum ChangeStatus {
     Clean,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    Typechanged,
+    Conflicted,
+    Unreadable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TreeNode {
     pub name: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_path: Option<String>,
+    #[serde(rename = "node_kind")]
     pub kind: NodeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "kind")]
+    pub change_kind: Option<ChangeKind>,
     pub status: ChangeStatus,
     pub churn: Churn,
     pub rollup: Rollup,
@@ -102,6 +118,14 @@ pub struct TerminalRenderer<'a> {
     pub format: OutputFormat,
     pub ls_colors: &'a lscolors::LsColors,
     pub root: PathBuf,
+    pub pr_header: Option<PrHeaderContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrHeaderContext {
+    pub base_ref: String,
+    pub head_label: String,
+    pub on_base: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkScheme {
@@ -122,14 +146,17 @@ impl Renderer for TerminalRenderer<'_> {
             out.push_str(f);
             out.push('\n');
         }
+        out.push_str(&self.render_header(tree));
+        out.push('\n');
         out.push_str(&format!("{}\n", tree.root.name));
         for (idx, child) in tree.root.children.iter().enumerate() {
             self.node(&mut out, child, "", idx + 1 == tree.root.children.len());
         }
+        let files_phrase = file_count_phrase(tree);
         out.push_str(&format!(
-            "\n{} dirs touched · {} files changed · {} {}\n",
+            "\n{} dirs touched · {} · {} {}\n",
             tree.summary.dirs_touched,
-            tree.summary.files_changed,
+            files_phrase,
             add_str(tree.summary.churn.added),
             del_str(tree.summary.churn.deleted)
         ));
@@ -137,6 +164,10 @@ impl Renderer for TerminalRenderer<'_> {
     }
 }
 impl TerminalRenderer<'_> {
+    fn render_header(&self, tree: &ChangeTree) -> String {
+        header_line(&tree.comparison, self.pr_header.as_ref()).bold().dimmed().to_string()
+    }
+
     fn node(&self, out: &mut String, n: &TreeNode, prefix: &str, last: bool) {
         let conn = if last { "└──" } else { "├──" };
         let mark_str = mark(n, self.marks);
@@ -165,6 +196,131 @@ impl TerminalRenderer<'_> {
         }
     }
 }
+
+fn header_line(mode: &ComparisonMode, pr_header: Option<&PrHeaderContext>) -> String {
+    match mode {
+        ComparisonMode::Staged => "Staged changes".to_string(),
+        ComparisonMode::Unstaged => "Unstaged changes".to_string(),
+        ComparisonMode::Uncommitted => "Uncommitted changes (staged + unstaged)".to_string(),
+        ComparisonMode::Range { range } => format!("Range: {range}"),
+        ComparisonMode::Against { reference } => format!("Against: {reference}...working tree"),
+        ComparisonMode::Pr { merge_base, committed } => {
+            let endpoint = if *committed { "committed" } else { "working tree" };
+            if let Some(ctx) = pr_header {
+                if ctx.on_base {
+                    format!(
+                        "PR: {}...{} · on base branch (uncommitted only)",
+                        ctx.base_ref, ctx.head_label
+                    )
+                } else {
+                    format!("PR: {}...{} · {endpoint}", ctx.base_ref, ctx.head_label)
+                }
+            } else {
+                format!("PR: {}...HEAD · {endpoint}", short_sha(merge_base))
+            }
+        }
+    }
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+impl ChangeKind {
+    fn label(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Modified => "modified",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Copied => "copied",
+            ChangeKind::Typechanged => "typechanged",
+            ChangeKind::Conflicted => "conflicted",
+            ChangeKind::Unreadable => "unreadable",
+        }
+    }
+
+    fn color(self) -> colored::Color {
+        use colored::Color;
+        match self {
+            ChangeKind::Added => Color::Green,
+            ChangeKind::Modified => Color::Yellow,
+            ChangeKind::Deleted => Color::Red,
+            ChangeKind::Renamed => Color::Blue,
+            ChangeKind::Copied => Color::BrightBlue,
+            ChangeKind::Typechanged => Color::Cyan,
+            ChangeKind::Conflicted => Color::BrightRed,
+            ChangeKind::Unreadable => Color::BrightYellow,
+        }
+    }
+}
+
+const CHANGE_KIND_ORDER: [ChangeKind; 8] = [
+    ChangeKind::Added,
+    ChangeKind::Modified,
+    ChangeKind::Deleted,
+    ChangeKind::Renamed,
+    ChangeKind::Copied,
+    ChangeKind::Typechanged,
+    ChangeKind::Conflicted,
+    ChangeKind::Unreadable,
+];
+
+fn file_word(n: usize) -> &'static str {
+    if n == 1 {
+        "file"
+    } else {
+        "files"
+    }
+}
+
+fn change_kind_tally(root: &TreeNode) -> BTreeMap<ChangeKind, usize> {
+    fn walk(node: &TreeNode, out: &mut BTreeMap<ChangeKind, usize>) {
+        if node.kind == NodeKind::File && node.status != ChangeStatus::Clean {
+            if let Some(kind) = node.change_kind {
+                *out.entry(kind).or_default() += 1;
+            }
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+
+    let mut out = BTreeMap::new();
+    walk(root, &mut out);
+    out
+}
+
+fn kind_count_phrase(kind: ChangeKind, count: usize) -> String {
+    format!("{count} {}", kind.label()).color(kind.color()).to_string()
+}
+
+fn file_count_phrase(tree: &ChangeTree) -> String {
+    let tally = change_kind_tally(&tree.root);
+    let nonzero: Vec<(ChangeKind, usize)> = CHANGE_KIND_ORDER
+        .iter()
+        .filter_map(|kind| tally.get(kind).copied().map(|count| (*kind, count)))
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    let total = tree.summary.files_changed;
+
+    if nonzero.len() == 1 && nonzero[0].1 == total {
+        let (kind, _) = nonzero[0];
+        return format!("{total} {} {}", file_word(total), kind.label().color(kind.color()));
+    }
+
+    if nonzero.len() > 1 {
+        let parts = nonzero
+            .into_iter()
+            .map(|(kind, count)| kind_count_phrase(kind, count))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        return format!("{total} {} changed ({parts})", file_word(total));
+    }
+
+    format!("{total} {} changed", file_word(total))
+}
+
 fn mark_color(s: &ChangeStatus) -> Option<colored::Color> {
     use colored::Color;
     match s {
@@ -261,6 +417,7 @@ struct FileChange {
     path: PathBuf,
     old_path: Option<PathBuf>,
     status: ChangeStatus,
+    change_kind: Option<ChangeKind>,
     churn: Churn,
 }
 
@@ -354,6 +511,22 @@ pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Res
     })?;
 
     Ok(PrBase { base_name, base_ref, merge_base: mb.to_string(), on_base: mb == head_oid })
+}
+
+pub fn resolve_head_label(start: &Path) -> anyhow::Result<String> {
+    let repo = Repository::discover(start)
+        .map_err(|_| anyhow::anyhow!("difftree: --pr requires a git repository"))?;
+    let head = repo.head()?;
+    if head.is_branch() {
+        if let Some(name) = head.shorthand() {
+            return Ok(name.to_string());
+        }
+    }
+    if let Some(oid) = head.target() {
+        return Ok(short_sha(&oid.to_string()));
+    }
+    let oid = head.peel_to_commit()?.id();
+    Ok(short_sha(&oid.to_string()))
 }
 
 pub fn collect_changes(
@@ -503,6 +676,19 @@ fn status_for_delta(delta: git2::Delta, mode: &ComparisonMode) -> ChangeStatus {
     }
 }
 
+fn change_kind_for_delta(delta: git2::Delta) -> ChangeKind {
+    match delta {
+        git2::Delta::Added | git2::Delta::Untracked => ChangeKind::Added,
+        git2::Delta::Deleted => ChangeKind::Deleted,
+        git2::Delta::Renamed => ChangeKind::Renamed,
+        git2::Delta::Copied => ChangeKind::Copied,
+        git2::Delta::Typechange => ChangeKind::Typechanged,
+        git2::Delta::Conflicted => ChangeKind::Conflicted,
+        git2::Delta::Unreadable => ChangeKind::Unreadable,
+        _ => ChangeKind::Modified,
+    }
+}
+
 fn pr_worktree_status_overrides(
     repo: &Repository,
 ) -> anyhow::Result<BTreeMap<PathBuf, ChangeStatus>> {
@@ -626,6 +812,7 @@ fn file_changes_from_diff(
             continue;
         };
         let mut status = status_for_delta(delta.status(), mode);
+        let change_kind = Some(change_kind_for_delta(delta.status()));
         if status == ChangeStatus::Staged {
             if let Some(worktree_status) = pr_worktree_statuses.get(path) {
                 status = worktree_status.clone();
@@ -648,7 +835,7 @@ fn file_changes_from_diff(
                 None => Churn::default(),
             }
         };
-        out.push(FileChange { path: path.to_path_buf(), old_path, status, churn });
+        out.push(FileChange { path: path.to_path_buf(), old_path, status, change_kind, churn });
     }
     Ok(out)
 }
@@ -679,6 +866,7 @@ fn diff_files_with_unreadable_fallback(
                 path,
                 old_path: None,
                 status: ChangeStatus::Unreadable,
+                change_kind: Some(ChangeKind::Unreadable),
                 churn: Churn::default(),
             });
         }
@@ -713,6 +901,7 @@ fn add_conflicted(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Res
                         path,
                         old_path: None,
                         status: ChangeStatus::Conflicted,
+                        change_kind: Some(ChangeKind::Conflicted),
                         churn: Churn::default(),
                     });
                 }
@@ -740,11 +929,13 @@ fn count_text_lines_streaming(abs: &Path) -> std::io::Result<Option<usize>> {
     Ok(Some(lines))
 }
 
-fn status_and_churn_for_untracked(abs: &Path) -> (ChangeStatus, Churn) {
+fn status_kind_and_churn_for_untracked(abs: &Path) -> (ChangeStatus, Option<ChangeKind>, Churn) {
     match count_text_lines_streaming(abs) {
-        Ok(Some(added)) => (ChangeStatus::Untracked, Churn { added, deleted: 0 }),
-        Ok(None) => (ChangeStatus::Untracked, Churn::default()),
-        Err(_) => (ChangeStatus::Unreadable, Churn::default()),
+        Ok(Some(added)) => {
+            (ChangeStatus::Untracked, Some(ChangeKind::Added), Churn { added, deleted: 0 })
+        }
+        Ok(None) => (ChangeStatus::Untracked, Some(ChangeKind::Added), Churn::default()),
+        Err(_) => (ChangeStatus::Unreadable, Some(ChangeKind::Unreadable), Churn::default()),
     }
 }
 
@@ -834,8 +1025,8 @@ fn add_untracked_from_workdir_walk(
         if existing.contains(&rel) {
             continue;
         }
-        let (status, churn) = status_and_churn_for_untracked(&workdir.join(&rel));
-        files.push(FileChange { path: rel.clone(), old_path: None, status, churn });
+        let (status, change_kind, churn) = status_kind_and_churn_for_untracked(&workdir.join(&rel));
+        files.push(FileChange { path: rel.clone(), old_path: None, status, change_kind, churn });
         existing.insert(rel);
     }
     Ok(())
@@ -855,10 +1046,19 @@ fn add_untracked(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Resu
     for e in statuses.iter() {
         if e.status().is_wt_new() {
             if let Some(p) = e.path() {
-                let (status, churn) = workdir
-                    .map(|w| status_and_churn_for_untracked(&w.join(p)))
-                    .unwrap_or((ChangeStatus::Unreadable, Churn::default()));
-                files.push(FileChange { path: PathBuf::from(p), old_path: None, status, churn });
+                let (status, change_kind, churn) =
+                    workdir.map(|w| status_kind_and_churn_for_untracked(&w.join(p))).unwrap_or((
+                        ChangeStatus::Unreadable,
+                        Some(ChangeKind::Unreadable),
+                        Churn::default(),
+                    ));
+                files.push(FileChange {
+                    path: PathBuf::from(p),
+                    old_path: None,
+                    status,
+                    change_kind,
+                    churn,
+                });
             }
         }
     }
@@ -943,6 +1143,7 @@ fn normalize_committed_scoped_rename(
         if scope_rel.as_os_str().is_empty() { f.path.clone() } else { scope_rel.join(&f.path) };
     if !tree_contains_repo_path(head_tree, &repo_path) {
         f.status = ChangeStatus::Deleted;
+        f.change_kind = Some(ChangeKind::Deleted);
         f.old_path = None;
     }
 }
@@ -967,6 +1168,7 @@ fn scoped_file_change(mut f: FileChange, scope_rel: &Path) -> Option<FileChange>
             if let Some(old_rel) = strip_repo_prefix(&old_path, scope_rel) {
                 f.path = old_rel;
                 f.status = ChangeStatus::Deleted;
+                f.change_kind = Some(ChangeKind::Deleted);
                 return Some(f);
             }
         }
@@ -1076,6 +1278,7 @@ pub fn collect_all_files(
                 path: rel.clone(),
                 old_path: None,
                 status: ChangeStatus::Clean,
+                change_kind: None,
                 churn: Churn::default(),
             });
             fmap.insert(rel, fc);
@@ -1188,6 +1391,7 @@ fn build_tree(
                 path: path.display().to_string(),
                 old_path: f.old_path.as_ref().map(|p| p.display().to_string()),
                 kind: NodeKind::File,
+                change_kind: f.change_kind,
                 status: f.status.clone(),
                 churn: f.churn.clone(),
                 rollup: Rollup {
@@ -1219,6 +1423,7 @@ fn build_tree(
                 path: path.display().to_string(),
                 old_path: None,
                 kind: NodeKind::Directory,
+                change_kind: None,
                 status: ChangeStatus::Clean,
                 churn: Churn::default(),
                 rollup: r,
@@ -1250,6 +1455,7 @@ fn build_tree(
         path: "".into(),
         old_path: None,
         kind: NodeKind::Directory,
+        change_kind: None,
         status: ChangeStatus::Clean,
         churn: Churn::default(),
         rollup: summary.clone(),
@@ -1359,6 +1565,69 @@ mod pr_tests {
         walk(&tree.root, name)
     }
 
+    #[test]
+    fn change_kinds_distinguish_staged_added_and_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("edited.txt"), "one\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("edited.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(p.join("added.txt"), "new\n").unwrap();
+        git(p, &["add", "."]);
+
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let added = find_file_node(&tree, "added.txt").expect("added.txt present");
+        let edited = find_file_node(&tree, "edited.txt").expect("edited.txt present");
+
+        assert_eq!(added.change_kind, Some(ChangeKind::Added));
+        assert_eq!(edited.change_kind, Some(ChangeKind::Modified));
+        assert_eq!(added.status, ChangeStatus::Staged);
+        assert_eq!(edited.status, ChangeStatus::Staged);
+    }
+
+    #[test]
+    fn untracked_file_kind_is_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("new.txt"), "new\n").unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
+        let node = find_file_node(&tree, "new.txt").expect("new.txt present");
+
+        assert_eq!(node.status, ChangeStatus::Untracked);
+        assert_eq!(node.change_kind, Some(ChangeKind::Added));
+    }
+
+    #[test]
+    fn head_label_uses_branch_name_and_detached_short_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["checkout", "-b", "feature"]);
+
+        assert_eq!(resolve_head_label(p).unwrap(), "feature");
+
+        let head = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "--detach", "HEAD"]);
+
+        assert_eq!(resolve_head_label(p).unwrap(), head[..7].to_string());
+    }
+
     fn render_plain_letters(tree: &ChangeTree, root: &Path) -> String {
         let _c = crate::test_color::guard();
         colored::control::set_override(false);
@@ -1368,6 +1637,7 @@ mod pr_tests {
             format: OutputFormat::Plain,
             ls_colors: &lsc,
             root: root.to_path_buf(),
+            pr_header: None,
         }
         .render(tree)
         .unwrap();
@@ -1516,6 +1786,7 @@ mod pr_tests {
             path: "copy.txt".to_string(),
             old_path: Some("source.txt".to_string()),
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Copied),
             status: ChangeStatus::Copied,
             churn: Churn::default(),
             rollup: Rollup::default(),
@@ -1532,6 +1803,7 @@ mod pr_tests {
             path: "copy.txt".to_string(),
             old_path: Some("source.txt".to_string()),
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Copied),
             status: ChangeStatus::Copied,
             churn: Churn::default(),
             rollup: Rollup::default(),
@@ -1542,6 +1814,7 @@ mod pr_tests {
             path: "locked.txt".to_string(),
             old_path: None,
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Unreadable),
             status: ChangeStatus::Unreadable,
             churn: Churn::default(),
             rollup: Rollup::default(),
@@ -1552,6 +1825,7 @@ mod pr_tests {
             path: "conflict.txt".to_string(),
             old_path: None,
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Conflicted),
             status: ChangeStatus::Conflicted,
             churn: Churn::default(),
             rollup: Rollup::default(),
@@ -1940,6 +2214,7 @@ mod pr_tests {
             path: PathBuf::from("other/a.txt"),
             old_path: Some(PathBuf::from("src/nested/a.txt")),
             status: ChangeStatus::Renamed,
+            change_kind: Some(ChangeKind::Renamed),
             churn: Churn::default(),
         };
 
@@ -2221,6 +2496,7 @@ mod color_tests {
             path: "a.rs".into(),
             old_path: None,
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Added),
             status: ChangeStatus::Staged,
             churn: Churn { added: 3, deleted: 1 },
             rollup: Rollup::default(),
@@ -2231,6 +2507,7 @@ mod color_tests {
             path: "gone.rs".into(),
             old_path: None,
             kind: NodeKind::File,
+            change_kind: Some(ChangeKind::Deleted),
             status: ChangeStatus::Deleted,
             churn: Churn { added: 0, deleted: 5 },
             rollup: Rollup::default(),
@@ -2243,6 +2520,7 @@ mod color_tests {
             path: "".into(),
             old_path: None,
             kind: NodeKind::Directory,
+            change_kind: None,
             status: ChangeStatus::Clean,
             churn: Churn::default(),
             rollup: summary.clone(),
@@ -2268,10 +2546,15 @@ mod color_tests {
             format: OutputFormat::Pretty,
             ls_colors: &lsc,
             root: std::path::PathBuf::from("/no/such/root"),
+            pr_header: None,
         };
         let out = r.render(&sample_tree()).unwrap();
         assert!(out.contains("\x1b[32m"), "green present (staged mark / +N): {out:?}");
         assert!(out.contains("\x1b[31m"), "red present (deleted mark / −M): {out:?}");
+        assert!(
+            out.contains("\x1b[1;2m") || out.contains("\x1b[2;1m"),
+            "header bold+dim ANSI present: {out:?}"
+        );
         colored::control::unset_override();
     }
 
@@ -2285,9 +2568,11 @@ mod color_tests {
             format: OutputFormat::Pretty,
             ls_colors: &lsc,
             root: std::path::PathBuf::from("/no/such/root"),
+            pr_header: None,
         };
         let out = r.render(&sample_tree()).unwrap();
         assert!(!out.contains("\x1b["), "no ANSI when color off: {out:?}");
+        assert!(out.starts_with("Staged changes\nrepo\n"), "{out:?}");
         colored::control::unset_override();
     }
 
@@ -2303,6 +2588,7 @@ mod color_tests {
             format: OutputFormat::Pretty,
             ls_colors: &lsc,
             root: tmp.path().to_path_buf(),
+            pr_header: None,
         };
         let out = r.render(&sample_tree()).unwrap();
         assert!(out.contains("\x1b[35m"), "filename magenta from LS_COLORS: {out:?}");
@@ -2319,10 +2605,167 @@ mod color_tests {
             format: OutputFormat::Pretty,
             ls_colors: &lsc,
             root: std::path::PathBuf::from("/no/such/root"),
+            pr_header: None,
         };
         // gone.rs does not exist under root → style lookup must fall back, not panic.
         let _ = r.render(&sample_tree()).unwrap();
         colored::control::unset_override();
+    }
+}
+
+#[cfg(test)]
+mod summary_frame_tests {
+    use super::*;
+
+    fn file(name: &str, status: ChangeStatus, change_kind: ChangeKind) -> TreeNode {
+        TreeNode {
+            name: name.into(),
+            path: name.into(),
+            old_path: None,
+            kind: NodeKind::File,
+            change_kind: Some(change_kind),
+            status,
+            churn: Churn { added: 1, deleted: 0 },
+            rollup: Rollup {
+                dirs_touched: 0,
+                files_changed: 1,
+                churn: Churn { added: 1, deleted: 0 },
+            },
+            children: vec![],
+        }
+    }
+
+    fn tree_for(mode: ComparisonMode, children: Vec<TreeNode>) -> ChangeTree {
+        let mut summary = Rollup::default();
+        for child in &children {
+            summary.files_changed += child.rollup.files_changed;
+            summary.churn.added += child.rollup.churn.added;
+            summary.churn.deleted += child.rollup.churn.deleted;
+        }
+        let root = TreeNode {
+            name: "repo".into(),
+            path: "".into(),
+            old_path: None,
+            kind: NodeKind::Directory,
+            change_kind: None,
+            status: ChangeStatus::Clean,
+            churn: Churn::default(),
+            rollup: summary.clone(),
+            children,
+        };
+        ChangeTree {
+            schema_version: SCHEMA_VERSION.into(),
+            comparison: mode,
+            view: View::BlastRadius,
+            root,
+            summary,
+            fallback: None,
+        }
+    }
+
+    fn render_plain(tree: &ChangeTree, pr_header: Option<PrHeaderContext>) -> String {
+        let _c = crate::test_color::guard();
+        colored::control::set_override(false);
+        let lsc = lscolors::LsColors::empty();
+        let out = TerminalRenderer {
+            marks: MarkScheme::Letter,
+            format: OutputFormat::Plain,
+            ls_colors: &lsc,
+            root: std::path::PathBuf::from("/repo"),
+            pr_header,
+        }
+        .render(tree)
+        .unwrap();
+        colored::control::unset_override();
+        out
+    }
+
+    #[test]
+    fn renders_header_text_for_each_comparison_mode() {
+        let staged = tree_for(ComparisonMode::Staged, vec![]);
+        assert!(render_plain(&staged, None).starts_with("Staged changes\nrepo\n"));
+
+        let unstaged = tree_for(ComparisonMode::Unstaged, vec![]);
+        assert!(render_plain(&unstaged, None).starts_with("Unstaged changes\nrepo\n"));
+
+        let uncommitted = tree_for(ComparisonMode::Uncommitted, vec![]);
+        assert!(render_plain(&uncommitted, None)
+            .starts_with("Uncommitted changes (staged + unstaged)\nrepo\n"));
+
+        let against = tree_for(ComparisonMode::Against { reference: "origin/main".into() }, vec![]);
+        assert!(render_plain(&against, None).starts_with("Against: origin/main...working tree\n"));
+
+        let range = tree_for(ComparisonMode::Range { range: "HEAD~2..HEAD".into() }, vec![]);
+        assert!(render_plain(&range, None).starts_with("Range: HEAD~2..HEAD\n"));
+    }
+
+    #[test]
+    fn renders_pr_header_variants() {
+        let working = tree_for(
+            ComparisonMode::Pr { merge_base: "3589ffcabcdef".into(), committed: false },
+            vec![],
+        );
+        let committed = tree_for(
+            ComparisonMode::Pr { merge_base: "3589ffcabcdef".into(), committed: true },
+            vec![],
+        );
+        let header = PrHeaderContext {
+            base_ref: "origin/main".into(),
+            head_label: "feature".into(),
+            on_base: false,
+        };
+
+        assert!(render_plain(&working, Some(header.clone()))
+            .starts_with("PR: origin/main...feature · working tree\nrepo\n"));
+        assert!(render_plain(&committed, Some(header.clone()))
+            .starts_with("PR: origin/main...feature · committed\nrepo\n"));
+
+        let on_base = PrHeaderContext {
+            base_ref: "origin/main".into(),
+            head_label: "main".into(),
+            on_base: true,
+        };
+        assert!(render_plain(&working, Some(on_base))
+            .starts_with("PR: origin/main...main · on base branch (uncommitted only)\nrepo\n"));
+    }
+
+    #[test]
+    fn footer_collapses_single_kind_and_breaks_down_mixed_kinds() {
+        let single = tree_for(
+            ComparisonMode::Staged,
+            vec![
+                file("a.rs", ChangeStatus::Staged, ChangeKind::Modified),
+                file("b.rs", ChangeStatus::Staged, ChangeKind::Modified),
+            ],
+        );
+        let single_out = render_plain(&single, None);
+        assert!(single_out.contains("0 dirs touched · 2 files modified · +2 −0"), "{single_out}");
+        assert!(!single_out.contains("(2 modified)"), "{single_out}");
+
+        let mixed = tree_for(
+            ComparisonMode::Staged,
+            vec![
+                file("a.rs", ChangeStatus::Staged, ChangeKind::Added),
+                file("b.rs", ChangeStatus::Staged, ChangeKind::Modified),
+                file("c.rs", ChangeStatus::Deleted, ChangeKind::Deleted),
+            ],
+        );
+        let mixed_out = render_plain(&mixed, None);
+        assert!(
+            mixed_out.contains(
+                "0 dirs touched · 3 files changed (1 added · 1 modified · 1 deleted) · +3 −0"
+            ),
+            "{mixed_out}"
+        );
+    }
+
+    #[test]
+    fn footer_omits_zero_kinds_for_empty_change_sets() {
+        let empty = tree_for(ComparisonMode::Staged, vec![]);
+        let out = render_plain(&empty, None);
+
+        assert!(out.contains("0 dirs touched · 0 files changed · +0 −0"), "{out}");
+        assert!(!out.contains("()"), "{out}");
     }
 }
 

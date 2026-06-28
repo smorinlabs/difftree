@@ -14,8 +14,8 @@ use clap::Parser;
 use colored::control;
 use difftree::{
     collect_all_files, collect_all_files_default_with_fallback, collect_changes,
-    collect_default_with_fallback, resolve_pr_base, ComparisonMode, JsonRenderer, OutputFormat,
-    Renderer, TerminalRenderer,
+    collect_default_with_fallback, resolve_head_label, resolve_pr_base, ComparisonMode,
+    JsonRenderer, OutputFormat, PrHeaderContext, Renderer, TerminalRenderer,
 };
 use lscolors::LsColors;
 
@@ -158,9 +158,20 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         };
         let render_root =
             std::fs::canonicalize(&view_args.path).unwrap_or_else(|_| view_args.path.clone());
+        let pr_header = pr_base
+            .as_ref()
+            .map(|base| {
+                resolve_head_label(&view_args.path).map(|head_label| PrHeaderContext {
+                    base_ref: base.base_ref.clone(),
+                    head_label,
+                    on_base: base.on_base,
+                })
+            })
+            .transpose()?;
         print!(
             "{}",
-            TerminalRenderer { marks, format, ls_colors, root: render_root }.render(&tree)?
+            TerminalRenderer { marks, format, ls_colors, root: render_root, pr_header }
+                .render(&tree)?
         );
     }
     Ok(())

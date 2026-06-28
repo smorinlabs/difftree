@@ -545,7 +545,9 @@ fn test_json_schema_version_for_staged_change() -> Result<(), Box<dyn std::error
     let output = Command::cargo_bin("difftree")?.arg("--json").arg(temp_path).output()?;
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(stdout.contains("\"schema_version\": \"difftree.v1\""));
+    assert!(stdout.contains("\"schema_version\": \"difftree.v2\""));
+    assert!(stdout.contains("\"node_kind\": \"File\""));
+    assert!(stdout.contains("\"kind\": \"added\""));
     assert!(stdout.contains("changed.txt"));
     Ok(())
 }
@@ -573,6 +575,7 @@ fn test_default_fallback_wording_when_only_unstaged() -> Result<(), Box<dyn std:
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("No staged changes — showing unstaged changes"))
+        .stdout(predicate::str::contains("Unstaged changes"))
         .stdout(predicate::str::contains("tracked.txt"));
     Ok(())
 }
@@ -618,6 +621,7 @@ fn test_uncommitted_shows_staged_and_unstaged() -> Result<(), Box<dyn std::error
     cmd.arg("--uncommitted").arg(p);
     cmd.assert()
         .success()
+        .stdout(predicate::str::contains("Uncommitted changes (staged + unstaged)"))
         .stdout(predicate::str::contains("staged.txt"))
         .stdout(predicate::str::contains("base.txt"));
     Ok(())
@@ -637,7 +641,10 @@ fn test_staged_flag_does_not_fallback() -> Result<(), Box<dyn std::error::Error>
 
     let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--staged").arg(p);
-    cmd.assert().success().stdout(predicate::str::contains("No staged changes").not());
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Staged changes"))
+        .stdout(predicate::str::contains("No staged changes").not());
     Ok(())
 }
 
@@ -800,8 +807,32 @@ fn test_range_excludes_untracked() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("--range").arg("HEAD~1..HEAD").arg(p);
     cmd.assert()
         .success()
+        .stdout(predicate::str::contains("Range: HEAD~1..HEAD"))
         .stdout(predicate::str::contains("b.txt"))
         .stdout(predicate::str::contains("untracked_xyz.txt").not());
+    Ok(())
+}
+
+#[test]
+fn test_against_and_unstaged_render_context_headers() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "one")?;
+    Command::new("git").args(["add", "base.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    fs::write(p.join("base.txt"), "two")?;
+
+    let mut against = Command::cargo_bin("difftree")?;
+    against.arg("--against").arg("HEAD").arg(p);
+    against.assert().success().stdout(predicate::str::contains("Against: HEAD...working tree"));
+
+    let mut unstaged = Command::cargo_bin("difftree")?;
+    unstaged.arg("--unstaged").arg(p);
+    unstaged.assert().success().stdout(predicate::str::contains("Unstaged changes"));
+
     Ok(())
 }
 
@@ -914,6 +945,7 @@ fn pr_default_shows_branch_and_working_not_base() {
         .current_dir(tmp.path())
         .assert()
         .success()
+        .stdout(predicate::str::contains("PR: origin/main...feature · working tree"))
         .stdout(predicate::str::contains("feat.txt"))
         .stdout(predicate::str::contains("working.txt"))
         .stdout(predicate::str::contains("main2.txt").not());
@@ -988,6 +1020,7 @@ fn pr_committed_excludes_working_tree() {
         .current_dir(tmp.path())
         .assert()
         .success()
+        .stdout(predicate::str::contains("PR: origin/main...feature · committed"))
         .stdout(predicate::str::contains("feat.txt"))
         .stdout(predicate::str::contains("working.txt").not())
         .stdout(predicate::str::contains("main2.txt").not());
@@ -1017,6 +1050,9 @@ fn pr_on_base_branch_warns() {
         .assert()
         .success()
         .stderr(predicate::str::contains("on base branch"))
+        .stdout(predicate::str::contains(
+            "PR: origin/main...main · on base branch (uncommitted only)",
+        ))
         .stdout(predicate::str::contains("working.txt"));
 }
 
@@ -1030,9 +1066,32 @@ fn pr_json_emits_pr_comparison() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("difftree.v1"))
+        .stdout(predicate::str::contains("difftree.v2"))
         .stdout(predicate::str::contains("\"Pr\""))
         .stdout(predicate::str::contains("feat.txt"));
+}
+
+#[test]
+fn pr_detached_head_header_uses_short_sha() {
+    let tmp = make_pr_repo();
+    let sha = {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--short=7", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    git_in(tmp.path(), &["checkout", "--detach", "HEAD"]);
+
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("PR: origin/main...{sha} · working tree")));
 }
 
 #[test]
