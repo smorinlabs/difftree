@@ -282,6 +282,10 @@ The v0.2 implementation introduces the git-aware blast-radius surface described 
 
 - Bare `difftree` in a git repository shows staged blast radius and falls back with `No staged changes — showing unstaged blast radius` when staged changes are empty.
 - Comparison modes: `--unstaged`, `--all`, `--range <A..B>`, and `--against <ref>`.
+- `--pr` shows the PR-style diff for the current branch: everything changed since it diverged from the base (the merge-base). The base auto-detects (`origin` default → `main` → `master`, preferring the `origin/<name>` remote ref); pass `--pr=<ref>` or `--pr-base <ref>` to override. Positional paths remain path scopes, so `difftree --pr src` means "show the PR diff under `src`." Default endpoint is the working tree (commits + staged + unstaged + untracked); add `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
+- Comparison views (`--pr`, `--staged`, `--all`, …) are colorized when color is enabled
+  (status marks by git state, `+N` green / `−M` red churn, and filenames via `LS_COLORS`).
+  Honors `--color=<when>`, `--force-color`/`-C`, `NO_COLOR`, and auto-disables when piped.
 - `--tree` renders a full status-marked tree; `--plain`/`--no-git` preserves classic tree behavior.
 - `--json` serializes the shared core model with `schema_version: "difftree.v1"`.
 - `--marks=symbol|letter|xy` controls status marks; `--heat=color,bar,badge` records the v1 heat-component grammar.

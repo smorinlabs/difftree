@@ -191,44 +191,8 @@ pub fn run(args: &ViewArgs, ls_colors: &LsColors) -> anyhow::Result<()> {
             String::new()
         };
 
-        // --- Corrected Logic Block ---
         let ls_style = ls_colors.style_for_path(entry.path()).cloned().unwrap_or_default();
-        let mut styled_name = name.to_string().normal();
-
-        if let Some(fg) = ls_style.foreground {
-            use lscolors::Color as LsColor;
-            let color = match fg {
-                LsColor::Black => colored::Color::Black,
-                LsColor::Red => colored::Color::Red,
-                LsColor::Green => colored::Color::Green,
-                LsColor::Yellow => colored::Color::Yellow,
-                LsColor::Blue => colored::Color::Blue,
-                LsColor::Magenta => colored::Color::Magenta,
-                LsColor::Cyan => colored::Color::Cyan,
-                LsColor::White => colored::Color::White,
-                LsColor::BrightBlack => colored::Color::BrightBlack,
-                LsColor::BrightRed => colored::Color::BrightRed,
-                LsColor::BrightGreen => colored::Color::BrightGreen,
-                LsColor::BrightYellow => colored::Color::BrightYellow,
-                LsColor::BrightBlue => colored::Color::BrightBlue,
-                LsColor::BrightMagenta => colored::Color::BrightMagenta,
-                LsColor::BrightCyan => colored::Color::BrightCyan,
-                LsColor::BrightWhite => colored::Color::BrightWhite,
-                LsColor::Fixed(_) => colored::Color::White,
-                LsColor::RGB(r, g, b) => colored::Color::TrueColor { r, g, b },
-            };
-            styled_name = styled_name.color(color);
-        }
-
-        if ls_style.font_style.bold {
-            styled_name = styled_name.bold();
-        }
-        if ls_style.font_style.italic {
-            styled_name = styled_name.italic();
-        }
-        if ls_style.font_style.underline {
-            styled_name = styled_name.underline();
-        }
+        let styled_name = difftree::style_name(name.as_ref(), &ls_style);
 
         let final_name = if args.hyperlinks && !is_dir {
             // Canonicalize the path to get an absolute path for the URL
