@@ -1,0 +1,120 @@
+name: publish
+
+# Triggered when release-please (or a human) pushes a `vX.Y.Z` tag. Publishes
+# the crate to crates.io using OIDC Trusted Publishing — no long-lived token.
+# Trusted Publishing must be configured once on crates.io for the `difftree`
+# crate (Settings → Trusted Publishing → add repo smorinlabs/difftree, workflow
+# publish.yml, environment crates-io). See docs/RELEASE.md.
+on:
+  push:
+    tags: ["v*"]
+
+# Deny-all at the top level; each job re-grants only what it needs. This is the
+# most security-sensitive workflow in the repo (it talks to crates.io), so any
+# step added later requires an explicit grant.
+permissions: {}
+
+concurrency:
+  # Serialize publish runs per tag. Never cancel an in-flight publish — an
+  # aborted upload can leave half-published state on the registry.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap, unguarded gate: fail fast on a bad tag BEFORE a human is asked to
+  # approve the protected publish environment. Compiles via `cargo publish
+  # --dry-run` so packaging problems surface here, not mid-release.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for the merge-base ancestor check
+
+      - name: Verify tag is reachable from main
+        # Defense in depth: a tag can point at any commit, including one on an
+        # unmerged feature branch. Releases must come from main.
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (commit ${GITHUB_SHA}) is not reachable from origin/main."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} is on main."
+
+      - name: Verify tag matches Cargo.toml version
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GIT_TAG#v}"
+          PKG_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          if [ "${TAG_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "::error::Tag version (${TAG_VERSION}) does not match Cargo.toml version (${PKG_VERSION})."
+            exit 1
+          fi
+          echo "Tag matches Cargo.toml version: ${PKG_VERSION}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Dry-run package
+        run: cargo publish --dry-run --locked
+
+  # The only job with id-token: write and the protected environment. The
+  # crates-io environment can require a reviewer, so the actual upload is the
+  # single human-gated step.
+  publish:
+    name: publish
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      id-token: write  # OIDC token for crates.io Trusted Publishing
+      contents: read
+    steps:
+      # This job never pushes to git, so don't leave the repo token in
+      # .git/config — publishing authenticates via OIDC, not the git remote.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Exchanges the workflow's OIDC identity for a short-lived crates.io API
+      # token. No CARGO_REGISTRY_TOKEN secret required.
+      - name: Authenticate to crates.io (Trusted Publishing)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

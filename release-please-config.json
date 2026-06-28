@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "pull-request-title-pattern": "chore(release): publish v${version} — review and merge to ship to crates.io",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "difftree",
+      "include-v-in-tag": true,
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat",     "section": "Features" },
+        { "type": "fix",      "section": "Bug Fixes" },
+        { "type": "perf",     "section": "Performance" },
+        { "type": "refactor", "section": "Refactoring" },
+        { "type": "deps",     "section": "Dependencies" },
+        { "type": "docs",     "section": "Documentation",  "hidden": true },
+        { "type": "ci",       "section": "CI/CD",          "hidden": true },
+        { "type": "test",     "section": "Testing",        "hidden": true },
+        { "type": "build",    "section": "Build System",   "hidden": true },
+        { "type": "style",    "section": "Styles",         "hidden": true },
+        { "type": "chore",    "section": "Miscellaneous",  "hidden": true }
+      ]
+    }
+  }
+}
