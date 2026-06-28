@@ -6,11 +6,49 @@ use crate::icons;
 use crate::sort;
 use crate::utils;
 use colored::{control, Colorize};
+use difftree::SCHEMA_VERSION;
 use ignore::{self, WalkBuilder};
 use lscolors::LsColors;
+use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use url::Url;
+
+#[derive(Debug, Serialize)]
+struct PlainTreeJson {
+    schema_version: &'static str,
+    view: &'static str,
+    root: PlainTreeNode,
+    summary: PlainTreeSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct PlainTreeSummary {
+    directories: usize,
+    files: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct PlainTreeNode {
+    name: String,
+    path: String,
+    node_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<String>,
+    children: Vec<PlainTreeNode>,
+}
+
+struct PlainJsonBuildContext<'a> {
+    root: &'a Path,
+    canonical_root: &'a Path,
+    args: &'a ViewArgs,
+    status_info: Option<(&'a git::StatusCache, &'a Path)>,
+}
 
 // Platform-specific import for unix permissions
 #[cfg(unix)]
@@ -236,6 +274,198 @@ pub fn run(args: &ViewArgs, ls_colors: &LsColors) -> anyhow::Result<()> {
     _ = writeln!(io::stdout(), "{summary}");
 
     Ok(())
+}
+
+/// Executes the classic directory tree view as JSON.
+pub fn run_json(args: &ViewArgs) -> anyhow::Result<()> {
+    let tree = collect_plain_tree_json(args)?;
+    println!("{}", serde_json::to_string_pretty(&tree)?);
+    Ok(())
+}
+
+fn collect_plain_tree_json(args: &ViewArgs) -> anyhow::Result<PlainTreeJson> {
+    if !args.path.is_dir() {
+        anyhow::bail!("'{}' is not a directory.", args.path.display());
+    }
+
+    let canonical_root = fs::canonicalize(&args.path)?;
+    let git_repo_status = if args.git_status { git::load_status(&canonical_root)? } else { None };
+    let status_info = git_repo_status.as_ref().map(|s| (&s.cache, s.root.as_path()));
+
+    let mut builder = WalkBuilder::new(&args.path);
+    builder.hidden(!args.show_all).git_ignore(args.gitignore);
+    if let Some(level) = args.level {
+        builder.max_depth(Some(level));
+    }
+
+    let mut entries: Vec<_> = builder
+        .build()
+        .filter_map(|result| match result {
+            Ok(entry) if entry.depth() > 0 => Some(entry),
+            Ok(_) => None,
+            Err(err) => {
+                eprintln!("difftree: ERROR: {err}");
+                None
+            }
+        })
+        .collect();
+
+    let sort_options = args.to_sort_options();
+    sort::sort_entries_hierarchically(&mut entries, &sort_options);
+
+    let mut summary = PlainTreeSummary { directories: 0, files: 0 };
+    let mut cursor = 0;
+    let ctx = PlainJsonBuildContext {
+        root: &args.path,
+        canonical_root: &canonical_root,
+        args,
+        status_info,
+    };
+    let children = build_plain_json_children(&args.path, &entries, &mut cursor, &ctx, &mut summary);
+
+    Ok(PlainTreeJson {
+        schema_version: SCHEMA_VERSION,
+        view: "plain-tree",
+        root: PlainTreeNode {
+            name: args.path.display().to_string(),
+            path: String::new(),
+            node_kind: "Directory",
+            git_status: None,
+            size_bytes: None,
+            permissions: root_permissions_json(args)?,
+            children,
+        },
+        summary,
+    })
+}
+
+fn build_plain_json_children(
+    parent: &Path,
+    entries: &[ignore::DirEntry],
+    cursor: &mut usize,
+    ctx: &PlainJsonBuildContext<'_>,
+    summary: &mut PlainTreeSummary,
+) -> Vec<PlainTreeNode> {
+    let mut children = Vec::new();
+    while *cursor < entries.len() {
+        let entry = &entries[*cursor];
+        if entry.path().parent() != Some(parent) {
+            break;
+        }
+
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        *cursor += 1;
+
+        if ctx.args.dirs_only && !is_dir {
+            continue;
+        }
+
+        let mut node = plain_json_node(entry, ctx, is_dir);
+        if is_dir {
+            summary.directories += 1;
+            node.children = build_plain_json_children(entry.path(), entries, cursor, ctx, summary);
+        } else {
+            summary.files += 1;
+        }
+        children.push(node);
+    }
+    children
+}
+
+fn plain_json_node(
+    entry: &ignore::DirEntry,
+    ctx: &PlainJsonBuildContext<'_>,
+    is_dir: bool,
+) -> PlainTreeNode {
+    let metadata = if ctx.args.size || ctx.args.permissions { entry.metadata().ok() } else { None };
+    let rel = entry.path().strip_prefix(ctx.root).unwrap_or(entry.path());
+
+    PlainTreeNode {
+        name: entry.file_name().to_string_lossy().to_string(),
+        path: rel.to_string_lossy().to_string(),
+        node_kind: if is_dir { "Directory" } else { "File" },
+        git_status: git_status_json(rel, ctx.canonical_root, ctx.status_info),
+        size_bytes: if ctx.args.size && !is_dir {
+            metadata.as_ref().map(|m| m.len())
+        } else {
+            None
+        },
+        permissions: if ctx.args.permissions {
+            metadata
+                .as_ref()
+                .map(metadata_permissions_json)
+                .or_else(|| Some("----------".to_string()))
+        } else {
+            None
+        },
+        children: Vec::new(),
+    }
+}
+
+fn root_permissions_json(args: &ViewArgs) -> anyhow::Result<Option<String>> {
+    if !args.permissions {
+        return Ok(None);
+    }
+    Ok(Some(
+        fs::metadata(&args.path)
+            .as_ref()
+            .map(metadata_permissions_json)
+            .unwrap_or_else(|_| "----------".to_string()),
+    ))
+}
+
+fn metadata_permissions_json(md: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        let mode = md.permissions().mode();
+        let file_type_char = if md.is_dir() { 'd' } else { '-' };
+        format!("{}{}", file_type_char, utils::format_permissions(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        "----------".to_string()
+    }
+}
+
+fn git_status_json(
+    rel_path: &Path,
+    canonical_root: &Path,
+    status_info: Option<(&git::StatusCache, &Path)>,
+) -> Option<&'static str> {
+    let (cache, repo_root) = status_info?;
+    let absolute_path = canonical_root.join(rel_path);
+    let relative_path = absolute_path.strip_prefix(repo_root).ok()?;
+    cache.get(relative_path).map(file_status_json)
+}
+
+fn file_status_json(status: &git::FileStatus) -> &'static str {
+    match status {
+        git::FileStatus::Modified => "Modified",
+        git::FileStatus::New => "New",
+        git::FileStatus::Deleted => "Deleted",
+        git::FileStatus::Renamed => "Renamed",
+        git::FileStatus::Typechange => "Typechange",
+        git::FileStatus::Untracked => "Untracked",
+        git::FileStatus::Conflicted => "Conflicted",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn root_permissions_json_falls_back_when_metadata_is_unavailable() {
+        let args = ViewArgs {
+            path: PathBuf::from("/definitely/missing/difftree/root"),
+            permissions: true,
+            ..ViewArgs::default()
+        };
+
+        assert_eq!(root_permissions_json(&args).unwrap().as_deref(), Some("----------"));
+    }
 }
 
 /// Builds tree structure information for proper connector display

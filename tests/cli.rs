@@ -715,6 +715,136 @@ fn test_all_files_json_marks_unchanged_clean() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn json_plain_flag_outputs_plain_tree_json() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    fs::create_dir(p.join("src"))?;
+    fs::write(p.join("src/lib.rs"), "pub fn demo() {}\n")?;
+
+    let output = Command::cargo_bin("difftree")?.arg("--plain").arg("--json").arg(p).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(value["schema_version"], "difftree.v2");
+    assert_eq!(value["view"], "plain-tree");
+    assert_eq!(value["root"]["node_kind"], "Directory");
+    assert_eq!(value["summary"]["directories"], 1);
+    assert_eq!(value["summary"]["files"], 1);
+    assert_eq!(value["root"]["children"][0]["name"], "src");
+    Ok(())
+}
+
+#[test]
+fn json_outside_git_repo_falls_back_to_plain_tree_json() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    fs::write(temp_dir.path().join("a.txt"), "a\n")?;
+
+    let output = Command::cargo_bin("difftree")?.arg("--json").arg(temp_dir.path()).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(value["view"], "plain-tree");
+    assert_eq!(value["summary"]["files"], 1);
+    assert!(stderr.contains("outside a git repository"));
+    Ok(())
+}
+
+#[test]
+fn all_json_outside_git_repo_falls_back_to_plain_tree_json(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    fs::write(temp_dir.path().join("a.txt"), "a\n")?;
+
+    let output =
+        Command::cargo_bin("difftree")?.arg("--all").arg("--json").arg(temp_dir.path()).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(value["view"], "plain-tree");
+    assert_eq!(value["summary"]["files"], 1);
+    assert!(stderr.contains("outside a git repository"));
+    Ok(())
+}
+
+#[test]
+fn json_git_status_plain_tree_includes_status_fields() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("tracked.txt"), "one\n")?;
+    Command::new("git").args(["add", "tracked.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+    fs::write(p.join("tracked.txt"), "two\n")?;
+
+    let output = Command::cargo_bin("difftree")?.arg("-G").arg("--json").arg(p).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    let child = &value["root"]["children"][0];
+    assert_eq!(child["name"], "tracked.txt");
+    assert_eq!(child["git_status"], "Modified");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn json_git_status_preserves_symlink_path_identity() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("target-a.txt"), "a\n")?;
+    symlink("target-a.txt", p.join("link.txt"))?;
+    Command::new("git").args(["add", "target-a.txt", "link.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+
+    fs::write(p.join("target-b.txt"), "b\n")?;
+    fs::remove_file(p.join("link.txt"))?;
+    symlink("target-b.txt", p.join("link.txt"))?;
+
+    let output = Command::cargo_bin("difftree")?.arg("-G").arg("--json").arg(p).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    let children = value["root"]["children"].as_array().expect("root children array");
+    let link =
+        children.iter().find(|node| node["name"] == "link.txt").expect("symlink node is present");
+    assert_eq!(link["git_status"], "Modified");
+    Ok(())
+}
+
+#[test]
+fn interactive_json_exports_plain_tree_without_tui() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    fs::write(temp_dir.path().join("a.txt"), "a\n")?;
+
+    let output = Command::cargo_bin("difftree")?
+        .arg("interactive")
+        .arg("--json")
+        .arg(temp_dir.path())
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(value["view"], "plain-tree");
+    assert_eq!(value["summary"]["files"], 1);
+    Ok(())
+}
+
+#[test]
 fn test_clean_repo_no_fallback_banner() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let p = temp_dir.path();
@@ -732,20 +862,20 @@ fn test_clean_repo_no_fallback_banner() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn test_json_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempdir()?; // not a git repo
-    let mut cmd = Command::cargo_bin("difftree")?;
-    cmd.arg("--json").arg(temp_dir.path());
-    cmd.assert().failure().stderr(predicate::str::contains("requires a git repository"));
-    Ok(())
-}
-
-#[test]
 fn test_staged_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?; // not a git repo
     let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("--staged").arg(temp_dir.path());
     cmd.assert().failure().stderr(predicate::str::contains("requires a git repository"));
+    Ok(())
+}
+
+#[test]
+fn pr_json_outside_git_repo_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?; // not a git repo
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--pr").arg("--json").arg(temp_dir.path());
+    cmd.assert().failure().stderr(predicate::str::contains("--pr requires a git repository"));
     Ok(())
 }
 
@@ -1067,6 +1197,8 @@ fn pr_json_emits_pr_comparison() {
         .assert()
         .success()
         .stdout(predicate::str::contains("difftree.v2"))
+        .stdout(predicate::str::contains("\"comparison\""))
+        .stdout(predicate::str::contains("\"view\": \"blast-radius\""))
         .stdout(predicate::str::contains("\"Pr\""))
         .stdout(predicate::str::contains("feat.txt"));
 }

@@ -159,6 +159,8 @@ pub struct InteractiveArgs {
     #[arg(short = 'G', long)]
     pub git_status: bool,
     #[arg(long)]
+    pub json: bool,
+    #[arg(long)]
     pub icons: bool,
     #[arg(short = 's', long)]
     pub size: bool,
@@ -239,6 +241,27 @@ impl InteractiveArgs {
             natural_sort: self.natural_sort,
             reverse: self.reverse,
             dotfiles_first: self.dotfiles_first,
+        }
+    }
+
+    pub fn to_json_view_args(&self) -> ViewArgs {
+        ViewArgs {
+            path: self.path.clone(),
+            json: true,
+            show_all: self.all,
+            gitignore: self.gitignore,
+            git_status: self.git_status,
+            icons: self.icons,
+            size: self.size,
+            permissions: self.permissions,
+            level: self.expand_level,
+            sort: self.sort,
+            dirs_first: self.dirs_first,
+            case_sensitive: self.case_sensitive,
+            natural_sort: self.natural_sort,
+            reverse: self.reverse,
+            dotfiles_first: self.dotfiles_first,
+            ..ViewArgs::default()
         }
     }
 }

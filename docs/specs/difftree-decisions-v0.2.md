@@ -51,7 +51,7 @@ When comparison flags are combined, difftree uses the first applicable mode in t
 | `--uncommitted` | Compare HEAD to working tree plus index (staged + unstaged + untracked). |
 | `--range <A..B>` | Compare two revisions. |
 | `--against <ref>` | Compare a ref to the working tree plus index. |
-| `--json` | Emit the JSON model. |
+| `--json` | Emit JSON. Git-aware modes and views emit the shared `ChangeTree` model; plain/classic tree modes emit the plain-tree model. |
 | `--format <pretty\|plain>` | Force terminal format. |
 | `--color <auto\|always\|never>`, `--no-color`, `-n`, `-C` | Color control. |
 | `--marks <symbol\|letter\|xy>` | Status mark scheme. |
@@ -102,6 +102,8 @@ Schema decision: bump from v1 rather than add a silent default. v1 already used
 the git delta kind. In v2, structural node type is renamed to `node_kind`, and
 changed file nodes expose the delta kind as `kind`.
 
+The git-aware `ChangeTree` JSON model contains:
+
 - `comparison`: the active comparison mode and parameters.
 - `view`: the active view, `"blast-radius"` or `"all-files"`.
 - `fallback`: null or the exact fallback heading.
@@ -110,3 +112,15 @@ changed file nodes expose the delta kind as `kind`.
 - `kind`: present on changed file nodes only; values are `added`, `modified`,
   `deleted`, `renamed`, `copied`, `typechanged`, `conflicted`, and `unreadable`.
 - `summary`: repository/view-level `dirs_touched`, `files_changed`, and `churn` totals.
+
+Plain-tree JSON is used when no git comparison is selected (`--plain`, non-git fallback,
+`-G/--git-status`, and `interactive --json`). It uses the same
+`schema_version: "difftree.v2"` and contains:
+
+- `view: "plain-tree"`.
+- `root`: recursive tree nodes with `name`, `path`, `node_kind`, optional `git_status`,
+  optional `size_bytes`, optional `permissions`, and `children`.
+- `summary`: `directories` and `files` counts for entries included after filters.
+
+Explicit git comparison modes (`--staged`, `--unstaged`, `--uncommitted`, `--range`,
+`--against`, and `--pr`) still require a git repository when combined with `--json`.
