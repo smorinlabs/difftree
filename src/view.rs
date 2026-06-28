@@ -43,6 +43,13 @@ struct PlainTreeNode {
     children: Vec<PlainTreeNode>,
 }
 
+struct PlainJsonBuildContext<'a> {
+    root: &'a Path,
+    canonical_root: &'a Path,
+    args: &'a ViewArgs,
+    status_info: Option<(&'a git::StatusCache, &'a Path)>,
+}
+
 // Platform-specific import for unix permissions
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -308,15 +315,13 @@ fn collect_plain_tree_json(args: &ViewArgs) -> anyhow::Result<PlainTreeJson> {
 
     let mut summary = PlainTreeSummary { directories: 0, files: 0 };
     let mut cursor = 0;
-    let children = build_plain_json_children(
-        &args.path,
-        &entries,
-        &mut cursor,
-        &args.path,
+    let ctx = PlainJsonBuildContext {
+        root: &args.path,
+        canonical_root: &canonical_root,
         args,
         status_info,
-        &mut summary,
-    );
+    };
+    let children = build_plain_json_children(&args.path, &entries, &mut cursor, &ctx, &mut summary);
 
     Ok(PlainTreeJson {
         schema_version: SCHEMA_VERSION,
@@ -338,9 +343,7 @@ fn build_plain_json_children(
     parent: &Path,
     entries: &[ignore::DirEntry],
     cursor: &mut usize,
-    root: &Path,
-    args: &ViewArgs,
-    status_info: Option<(&git::StatusCache, &Path)>,
+    ctx: &PlainJsonBuildContext<'_>,
     summary: &mut PlainTreeSummary,
 ) -> Vec<PlainTreeNode> {
     let mut children = Vec::new();
@@ -353,22 +356,14 @@ fn build_plain_json_children(
         let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
         *cursor += 1;
 
-        if args.dirs_only && !is_dir {
+        if ctx.args.dirs_only && !is_dir {
             continue;
         }
 
-        let mut node = plain_json_node(entry, root, args, status_info, is_dir);
+        let mut node = plain_json_node(entry, ctx, is_dir);
         if is_dir {
             summary.directories += 1;
-            node.children = build_plain_json_children(
-                entry.path(),
-                entries,
-                cursor,
-                root,
-                args,
-                status_info,
-                summary,
-            );
+            node.children = build_plain_json_children(entry.path(), entries, cursor, ctx, summary);
         } else {
             summary.files += 1;
         }
@@ -379,21 +374,23 @@ fn build_plain_json_children(
 
 fn plain_json_node(
     entry: &ignore::DirEntry,
-    root: &Path,
-    args: &ViewArgs,
-    status_info: Option<(&git::StatusCache, &Path)>,
+    ctx: &PlainJsonBuildContext<'_>,
     is_dir: bool,
 ) -> PlainTreeNode {
-    let metadata = if args.size || args.permissions { entry.metadata().ok() } else { None };
-    let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+    let metadata = if ctx.args.size || ctx.args.permissions { entry.metadata().ok() } else { None };
+    let rel = entry.path().strip_prefix(ctx.root).unwrap_or(entry.path());
 
     PlainTreeNode {
         name: entry.file_name().to_string_lossy().to_string(),
         path: rel.to_string_lossy().to_string(),
         node_kind: if is_dir { "Directory" } else { "File" },
-        git_status: git_status_json(entry.path(), status_info),
-        size_bytes: if args.size && !is_dir { metadata.as_ref().map(|m| m.len()) } else { None },
-        permissions: if args.permissions {
+        git_status: git_status_json(rel, ctx.canonical_root, ctx.status_info),
+        size_bytes: if ctx.args.size && !is_dir {
+            metadata.as_ref().map(|m| m.len())
+        } else {
+            None
+        },
+        permissions: if ctx.args.permissions {
             metadata
                 .as_ref()
                 .map(metadata_permissions_json)
@@ -409,8 +406,12 @@ fn root_permissions_json(args: &ViewArgs) -> anyhow::Result<Option<String>> {
     if !args.permissions {
         return Ok(None);
     }
-    let md = fs::metadata(&args.path)?;
-    Ok(Some(metadata_permissions_json(&md)))
+    Ok(Some(
+        fs::metadata(&args.path)
+            .as_ref()
+            .map(metadata_permissions_json)
+            .unwrap_or_else(|_| "----------".to_string()),
+    ))
 }
 
 fn metadata_permissions_json(md: &fs::Metadata) -> String {
@@ -428,12 +429,13 @@ fn metadata_permissions_json(md: &fs::Metadata) -> String {
 }
 
 fn git_status_json(
-    path: &Path,
+    rel_path: &Path,
+    canonical_root: &Path,
     status_info: Option<(&git::StatusCache, &Path)>,
 ) -> Option<&'static str> {
     let (cache, repo_root) = status_info?;
-    let canonical_entry = path.canonicalize().ok()?;
-    let relative_path = canonical_entry.strip_prefix(repo_root).ok()?;
+    let absolute_path = canonical_root.join(rel_path);
+    let relative_path = absolute_path.strip_prefix(repo_root).ok()?;
     cache.get(relative_path).map(file_status_json)
 }
 
@@ -446,6 +448,23 @@ fn file_status_json(status: &git::FileStatus) -> &'static str {
         git::FileStatus::Typechange => "Typechange",
         git::FileStatus::Untracked => "Untracked",
         git::FileStatus::Conflicted => "Conflicted",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn root_permissions_json_falls_back_when_metadata_is_unavailable() {
+        let args = ViewArgs {
+            path: PathBuf::from("/definitely/missing/difftree/root"),
+            permissions: true,
+            ..ViewArgs::default()
+        };
+
+        assert_eq!(root_permissions_json(&args).unwrap().as_deref(), Some("----------"));
     }
 }
 

@@ -794,6 +794,37 @@ fn json_git_status_plain_tree_includes_status_fields() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn json_git_status_preserves_symlink_path_identity() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = tempdir()?;
+    let p = temp_dir.path();
+    Command::new("git").arg("init").current_dir(p).output()?;
+    Command::new("git").args(["config", "user.email", "t@e.com"]).current_dir(p).output()?;
+    Command::new("git").args(["config", "user.name", "T"]).current_dir(p).output()?;
+    fs::write(p.join("target-a.txt"), "a\n")?;
+    symlink("target-a.txt", p.join("link.txt"))?;
+    Command::new("git").args(["add", "target-a.txt", "link.txt"]).current_dir(p).output()?;
+    Command::new("git").args(["commit", "-m", "init"]).current_dir(p).output()?;
+
+    fs::write(p.join("target-b.txt"), "b\n")?;
+    fs::remove_file(p.join("link.txt"))?;
+    symlink("target-b.txt", p.join("link.txt"))?;
+
+    let output = Command::cargo_bin("difftree")?.arg("-G").arg("--json").arg(p).output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)?;
+    let children = value["root"]["children"].as_array().expect("root children array");
+    let link =
+        children.iter().find(|node| node["name"] == "link.txt").expect("symlink node is present");
+    assert_eq!(link["git_status"], "Modified");
+    Ok(())
+}
+
 #[test]
 fn interactive_json_exports_plain_tree_without_tui() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
