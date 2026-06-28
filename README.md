@@ -281,13 +281,19 @@ This project is licensed under the terms of the [MIT License](LICENSE).
 The v0.2 implementation introduces the git-aware blast-radius surface described in `docs/PRD/difftree-prd-v0.2.md`:
 
 - Bare `difftree` in a git repository shows staged blast radius and falls back with `No staged changes — showing unstaged blast radius` when staged changes are empty.
-- Comparison modes: `--unstaged`, `--all`, `--range <A..B>`, and `--against <ref>`.
+- Comparison modes and views: `--unstaged`, `--all`, `--range <A..B>`, and `--against <ref>`.
 - `--pr` shows the PR-style diff for the current branch: everything changed since it diverged from the base (the merge-base). The base auto-detects (`origin` default → `main` → `master`, preferring the `origin/<name>` remote ref); pass `--pr=<ref>` or `--pr-base <ref>` to override. Positional paths remain path scopes, so `difftree --pr src` means "show the PR diff under `src`." Default endpoint is the working tree (commits + staged + unstaged + untracked); add `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
 - Comparison views (`--pr`, `--staged`, `--all`, …) are colorized when color is enabled
   (status marks by git state, `+N` green / `−M` red churn, and filenames via `LS_COLORS`).
   Honors `--color=<when>`, `--force-color`/`-C`, `NO_COLOR`, and auto-disables when piped.
 - `--tree` renders a full status-marked tree; `--plain`/`--no-git` preserves classic tree behavior.
-- `--json` serializes the shared core model with `schema_version: "difftree.v1"`.
+- `--json` is available on every rendering command path with `schema_version:
+  "difftree.v1"`. Git-aware modes and views (`difftree --json`, `--all --json`,
+  `--pr --json`, and related comparison flags) emit the `ChangeTree` model.
+  Classic/plain tree paths (`--plain --json`, non-git fallbacks, `-G --json`,
+  and `interactive --json`) emit a plain-tree JSON model. Explicit git
+  comparisons such as `--staged --json` and `--pr --json` still require a git
+  repository.
 - `--marks=symbol|letter|xy` controls status marks; `--heat=color,bar,badge` records the v1 heat-component grammar.
 
 See `docs/specs/difftree-decisions-v0.2.md` for the locked flag table and JSON contract.

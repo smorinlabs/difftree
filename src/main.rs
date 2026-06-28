@@ -25,6 +25,10 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let ls_colors = LsColors::from_env().unwrap_or_default();
     match &args.command {
+        Some(Commands::Interactive(interactive_args)) if interactive_args.json => {
+            let view_args = interactive_args.to_json_view_args();
+            view::run_json(&view_args)
+        }
         Some(Commands::Interactive(interactive_args)) => tui::run(interactive_args, &ls_colors),
         None => run_cli(&args, &ls_colors),
     }
@@ -44,6 +48,24 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         ColorChoice::Auto => {}
     }
 
+    let explicit_mode = view_args.uncommitted
+        || view_args.unstaged
+        || view_args.staged
+        || view_args.range.is_some()
+        || view_args.against.is_some()
+        || view_args.pr.is_some();
+    let in_git_repo = is_git_repo(&view_args.path);
+    let wants_plain_json = view_args.json
+        && (view_args.plain || view_args.git_status || (!explicit_mode && !in_git_repo));
+    if wants_plain_json {
+        if !in_git_repo {
+            eprintln!(
+                "difftree: outside a git repository; showing plain tree (git features unavailable)"
+            );
+        }
+        return view::run_json(view_args);
+    }
+
     let wants_plain_tree = view_args.plain
         || view_args.git_status
         || (!view_args.json
@@ -55,9 +77,9 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
             && view_args.against.is_none()
             && view_args.pr.is_none()
             && !view_args.ignored
-            && !is_git_repo(&view_args.path));
+            && !in_git_repo);
     if wants_plain_tree {
-        if !is_git_repo(&view_args.path) {
+        if !in_git_repo {
             eprintln!(
                 "difftree: outside a git repository; showing plain tree (git features unavailable)"
             );
@@ -102,12 +124,6 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     } else {
         ComparisonMode::Staged
     };
-    let explicit_mode = view_args.uncommitted
-        || view_args.unstaged
-        || view_args.staged
-        || view_args.range.is_some()
-        || view_args.against.is_some()
-        || view_args.pr.is_some();
     let use_fallback = !explicit_mode && !view_args.all && !view_args.ignored;
     let walk = difftree::WalkOpts {
         all: view_args.show_all,
@@ -132,6 +148,12 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
         collect_changes(&view_args.path, mode, include_untracked)?
     };
     let Some(tree) = tree else {
+        if view_args.json && !explicit_mode {
+            eprintln!(
+                "difftree: outside a git repository; showing plain tree (git features unavailable)"
+            );
+            return view::run_json(view_args);
+        }
         if view_args.json || explicit_mode {
             anyhow::bail!(
                 "difftree: this command requires a git repository (use --plain for a plain tree, or run inside a repo)"
