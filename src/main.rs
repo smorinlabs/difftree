@@ -66,7 +66,11 @@ fn run_cli(args: &Args, ls_colors: &LsColors) -> anyhow::Result<()> {
     }
 
     let pr_base = if let Some(pr_opt) = &view_args.pr {
-        let base = resolve_pr_base(&view_args.path, pr_opt.as_deref())?;
+        if pr_opt.is_some() && view_args.pr_base.is_some() {
+            anyhow::bail!("difftree: use either --pr=<ref> or --pr-base <ref>, not both");
+        }
+        let base_override = pr_opt.as_deref().or(view_args.pr_base.as_deref());
+        let base = resolve_pr_base(&view_args.path, base_override)?;
         if base.on_base {
             if view_args.committed {
                 eprintln!(

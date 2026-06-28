@@ -5,10 +5,46 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt;
 use std::path::PathBuf;
 
+const STATUS_KEY_HELP: &str = r#"Status key:
+  Row format: <tree connector> <status mark> <path> +added -deleted
+  Directories show a rollup: (<changed files> files, +added -deleted)
+
+  --marks=symbol: ● staged, ○ unstaged, ◐ staged+unstaged, ? untracked,
+                  ↻ renamed, ⧉ copied, × deleted, ◆ typechanged,
+                  ‼ conflicted, ⚠ unreadable, ! ignored
+  --marks=letter: S staged, M unstaged, B staged+unstaged, ? untracked,
+                  R renamed, C copied, D deleted, T typechanged,
+                  U conflicted, E unreadable, I ignored
+  --marks=xy:     M_ staged, _M unstaged, MM staged+unstaged, ?? untracked,
+                  R_ renamed, C_ copied, D_ deleted, T_ typechanged,
+                  UU conflicted, E? unreadable, !! ignored
+                  (_ means a space; clean files have a blank mark)
+
+Definitions:
+  staged: change is in the git index.
+  unstaged: tracked worktree change is not staged.
+  staged+unstaged: the same path has both staged and unstaged changes.
+  untracked: path is not tracked by git.
+  renamed: tracked path moved or renamed; shown as old -> new.
+  copied: new path was detected as a copy; shown as source => copy.
+  deleted: tracked path was removed.
+  typechanged: tracked object kind changed, such as file <-> symlink or submodule.
+  conflicted: unmerged path during merge/rebase/cherry-pick.
+  unreadable: path exists but difftree could not read it.
+  ignored: path matches git ignore rules when ignored entries are shown.
+  clean: unchanged path shown in all-files views.
+
+Colors when enabled: staged green, unstaged yellow, staged+unstaged cyan,
+  untracked magenta, renamed blue, copied bright blue, deleted red,
+  typechanged cyan, conflicted bright red, unreadable bright yellow,
+  ignored gray. Churn is +added green and -deleted red; filenames follow
+  LS_COLORS."#;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 #[command(override_usage = "difftree [OPTIONS] [PATH]")]
+#[command(after_help = STATUS_KEY_HELP)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -50,9 +86,12 @@ pub struct ViewArgs {
         long,
         value_name = "REF",
         num_args = 0..=1,
+        require_equals = true,
         conflicts_with_all = ["range", "against", "staged", "unstaged", "uncommitted"]
     )]
     pub pr: Option<Option<String>>,
+    #[arg(long = "pr-base", value_name = "REF", requires = "pr")]
+    pub pr_base: Option<String>,
     #[arg(long, requires = "pr")]
     pub committed: bool,
     #[arg(long, default_value = "color,bar,badge")]

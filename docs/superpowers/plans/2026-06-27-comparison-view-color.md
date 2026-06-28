@@ -25,8 +25,7 @@
 
 | File | Responsibility | Change |
 |---|---|---|
-| `src/utils.rs` | Shared helpers | Add `style_name(name, &lscolors::Style) -> String` (extracted conversion). |
-| `src/lib.rs` | Model + renderers | Add `#[cfg(test)] pub(crate) mod test_color` lock; color `TerminalRenderer` (marks/churn/filenames); add lifetime + `ls_colors`/`root` fields. |
+| `src/lib.rs` | Model + renderers (LIBRARY crate `difftree`) | Add `pub fn style_name(...)` (exported as `difftree::style_name`); add `#[cfg(test)] pub(crate) mod test_color` lock; color `TerminalRenderer` (marks/churn/filenames); add lifetime + `ls_colors`/`root` fields. NOTE: `utils.rs`/`view.rs` are in the BINARY crate (`main.rs` `mod`s); the library cannot call into them, so the shared helper lives in the library and the binary reaches it via `difftree::`. |
 | `src/view.rs` | Plain-tree view | Replace the inline LsColors block with a `utils::style_name` call. |
 | `src/main.rs` | CLI dispatch | Pass `ls_colors` + canonicalized scope root into `TerminalRenderer`. |
 | `README.md` | Docs | Note comparison views are colored when color is enabled. |
@@ -38,12 +37,11 @@
 Extract the LsColors→`colored` filename styling into one reusable function and route `view.rs` through it. Also add the crate-wide test mutex used by all color tests.
 
 **Files:**
-- Modify: `src/lib.rs` (add `test_color` module)
-- Modify: `src/utils.rs` (add `style_name` + tests)
-- Modify: `src/view.rs:195-231` (replace block with helper call)
+- Modify: `src/lib.rs` (add `style_name` + its tests + `test_color` module — all in the LIBRARY crate)
+- Modify: `src/view.rs:195-231` (replace block with `difftree::style_name` call)
 
 **Interfaces:**
-- Produces: `pub fn style_name(name: &str, style: &lscolors::Style) -> String` (in `utils`). Consumed by `view.rs` (this task) and `TerminalRenderer` (Task 2).
+- Produces: `pub fn style_name(name: &str, style: &lscolors::Style) -> String` (in `lib.rs`, exported as `difftree::style_name`). Consumed by `view.rs` (binary, via `difftree::style_name`) and `TerminalRenderer` (Task 2, same library crate via `crate::style_name`).
 - Produces: `#[cfg(test)] pub(crate) mod test_color { pub fn guard() -> std::sync::MutexGuard<'static, ()> }` (in `lib.rs`). Consumed by color tests in Tasks 1 & 2.
 
 - [ ] **Step 1: Add the crate-wide test-color lock to `src/lib.rs`**
@@ -189,7 +187,7 @@ Add color to the comparison-mode renderer and thread `LsColors` + scope root thr
 - Modify: `src/main.rs` (construction site ~line 155)
 
 **Interfaces:**
-- Consumes: `crate::utils::style_name` and `crate::test_color::guard` (Task 1).
+- Consumes: `crate::style_name` and `crate::test_color::guard` (Task 1, same library crate).
 - Produces: `pub struct TerminalRenderer<'a> { pub marks: MarkScheme, pub format: OutputFormat, pub ls_colors: &'a lscolors::LsColors, pub root: std::path::PathBuf }`.
 
 - [ ] **Step 1: Write the failing color tests**
@@ -426,7 +424,7 @@ In `src/lib.rs`, replace the body of `fn node` (the whole method) with:
         };
         let abs = self.root.join(&n.path);
         let style = self.ls_colors.style_for_path(&abs).cloned().unwrap_or_default();
-        let name_render = crate::utils::style_name(&n.name, &style);
+        let name_render = crate::style_name(&n.name, &style);
         out.push_str(&format!("{prefix}{conn} {mark_render} {name_render}{metric}\n"));
         let next = format!("{}{}", prefix, if last { "    " } else { "│   " });
         for (idx, c) in n.children.iter().enumerate() {

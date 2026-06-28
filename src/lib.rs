@@ -1,7 +1,7 @@
 //! Core difftree library: serializable model, git-backed collection, and renderers.
 
 use colored::Colorize;
-use git2::{DiffOptions, Repository};
+use git2::{DiffFindOptions, DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -45,7 +45,11 @@ pub enum ChangeStatus {
     Both,
     Untracked,
     Renamed,
+    Copied,
     Deleted,
+    Typechanged,
+    Conflicted,
+    Unreadable,
     Ignored,
     Clean,
 }
@@ -54,6 +58,8 @@ pub enum ChangeStatus {
 pub struct TreeNode {
     pub name: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
     pub kind: NodeKind,
     pub status: ChangeStatus,
     pub churn: Churn,
@@ -147,9 +153,10 @@ impl TerminalRenderer<'_> {
         } else {
             format!(" {} {}", add_str(n.churn.added), del_str(n.churn.deleted))
         };
+        let name = display_name(n);
         let abs = self.root.join(&n.path);
         let style = self.ls_colors.style_for_path(&abs).cloned().unwrap_or_default();
-        let name_render = crate::style_name(&n.name, &style);
+        let name_render = crate::style_name(&name, &style);
         out.push_str(&format!("{prefix}{conn} {mark_render} {name_render}{metric}\n"));
         let next = format!("{}{}", prefix, if last { "    " } else { "│   " });
         for (idx, c) in n.children.iter().enumerate() {
@@ -165,7 +172,11 @@ fn mark_color(s: &ChangeStatus) -> Option<colored::Color> {
         ChangeStatus::Both => Some(Color::Cyan),
         ChangeStatus::Untracked => Some(Color::Magenta),
         ChangeStatus::Renamed => Some(Color::Blue),
+        ChangeStatus::Copied => Some(Color::BrightBlue),
         ChangeStatus::Deleted => Some(Color::Red),
+        ChangeStatus::Typechanged => Some(Color::Cyan),
+        ChangeStatus::Conflicted => Some(Color::BrightRed),
+        ChangeStatus::Unreadable => Some(Color::BrightYellow),
         ChangeStatus::Ignored => Some(Color::BrightBlack),
         ChangeStatus::Clean => None,
     }
@@ -184,7 +195,11 @@ fn mark(n: &TreeNode, s: MarkScheme) -> &'static str {
             ChangeStatus::Both => "◐",
             ChangeStatus::Untracked => "?",
             ChangeStatus::Renamed => "↻",
+            ChangeStatus::Copied => "⧉",
             ChangeStatus::Deleted => "×",
+            ChangeStatus::Typechanged => "◆",
+            ChangeStatus::Conflicted => "‼",
+            ChangeStatus::Unreadable => "⚠",
             ChangeStatus::Ignored => "!",
             ChangeStatus::Clean => " ",
         },
@@ -194,7 +209,11 @@ fn mark(n: &TreeNode, s: MarkScheme) -> &'static str {
             ChangeStatus::Both => "B",
             ChangeStatus::Untracked => "?",
             ChangeStatus::Renamed => "R",
+            ChangeStatus::Copied => "C",
             ChangeStatus::Deleted => "D",
+            ChangeStatus::Typechanged => "T",
+            ChangeStatus::Conflicted => "U",
+            ChangeStatus::Unreadable => "E",
             ChangeStatus::Ignored => "I",
             ChangeStatus::Clean => " ",
         },
@@ -204,16 +223,42 @@ fn mark(n: &TreeNode, s: MarkScheme) -> &'static str {
             ChangeStatus::Both => "MM",
             ChangeStatus::Untracked => "??",
             ChangeStatus::Renamed => "R ",
+            ChangeStatus::Copied => "C ",
             ChangeStatus::Deleted => "D ",
+            ChangeStatus::Typechanged => "T ",
+            ChangeStatus::Conflicted => "UU",
+            ChangeStatus::Unreadable => "E?",
             ChangeStatus::Ignored => "!!",
             ChangeStatus::Clean => "  ",
         },
     }
 }
+fn display_name(n: &TreeNode) -> String {
+    if matches!(n.status, ChangeStatus::Renamed | ChangeStatus::Copied) {
+        if let Some(old_path) = &n.old_path {
+            let old = Path::new(old_path);
+            let new = Path::new(&n.path);
+            let same_parent =
+                old.parent().unwrap_or(Path::new("")) == new.parent().unwrap_or(Path::new(""));
+            let old_display = if same_parent {
+                old.file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| old_path.clone())
+            } else {
+                old_path.clone()
+            };
+            let new_display = if same_parent { n.name.clone() } else { n.path.clone() };
+            let arrow = if n.status == ChangeStatus::Renamed { " -> " } else { " => " };
+            return format!("{old_display}{arrow}{new_display}");
+        }
+    }
+    n.name.clone()
+}
 
 #[derive(Debug, Clone)]
 struct FileChange {
     path: PathBuf,
+    old_path: Option<PathBuf>,
     status: ChangeStatus,
     churn: Churn,
 }
@@ -223,7 +268,7 @@ struct FileChange {
 pub struct PrBase {
     /// The base branch's short name (for messages), e.g. "main".
     pub base_name: String,
-    /// The ref actually used (remote-preferred), e.g. "origin/main".
+    /// The ref actually used, e.g. "origin/main" or an explicit "main".
     pub base_ref: String,
     /// The merge-base commit SHA between the base and HEAD.
     pub merge_base: String,
@@ -241,9 +286,10 @@ fn origin_default_branch(repo: &Repository) -> Option<String> {
 /// Resolves the base branch for `--pr` and computes the merge-base with HEAD.
 ///
 /// Base candidates (auto-detect): the `origin/HEAD` default branch, then `main`,
-/// then `master`; an explicit `base_override` replaces the candidate list. Each
-/// candidate prefers its remote-tracking ref (`origin/<name>`) over the local
-/// branch. Errors if no candidate resolves or there is no common history.
+/// then `master`; auto-detected candidates prefer their remote-tracking ref
+/// (`origin/<name>`) over the local branch. An explicit `base_override` is
+/// resolved exactly first. Errors if no candidate resolves or there is no common
+/// history.
 pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Result<PrBase> {
     let repo = Repository::discover(start)
         .map_err(|_| anyhow::anyhow!("difftree: --pr requires a git repository"))?;
@@ -262,22 +308,37 @@ pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Res
     candidates.retain(|c| seen.insert(c.clone()));
 
     let mut resolved: Option<(String, String, git2::Oid)> = None;
-    for name in &candidates {
-        for cand_ref in [format!("origin/{name}"), name.clone()] {
+    if let Some(name) = base_override {
+        let mut refs = vec![name.to_string()];
+        if !name.contains('/') && !name.starts_with("refs/") {
+            refs.push(format!("origin/{name}"));
+        }
+        for cand_ref in refs {
             if let Ok(obj) = repo.revparse_single(&cand_ref) {
                 if let Ok(commit) = obj.peel_to_commit() {
-                    resolved = Some((name.clone(), cand_ref, commit.id()));
+                    resolved = Some((name.to_string(), cand_ref, commit.id()));
                     break;
                 }
             }
         }
-        if resolved.is_some() {
-            break;
+    } else {
+        for name in &candidates {
+            for cand_ref in [format!("origin/{name}"), name.clone()] {
+                if let Ok(obj) = repo.revparse_single(&cand_ref) {
+                    if let Ok(commit) = obj.peel_to_commit() {
+                        resolved = Some((name.clone(), cand_ref, commit.id()));
+                        break;
+                    }
+                }
+            }
+            if resolved.is_some() {
+                break;
+            }
         }
     }
     let (base_name, base_ref, base_oid) = resolved.ok_or_else(|| {
         anyhow::anyhow!(
-            "difftree: could not resolve base branch (tried: {}); pass one with --pr <ref>",
+            "difftree: could not resolve base branch (tried: {}); pass one with --pr=<ref> or --pr-base <ref>",
             candidates.join(", ")
         )
     })?;
@@ -291,12 +352,7 @@ pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Res
         anyhow::anyhow!("difftree: no common history between HEAD and base '{base_name}'")
     })?;
 
-    Ok(PrBase {
-        base_name,
-        base_ref,
-        merge_base: mb.to_string(),
-        on_base: mb == head_oid,
-    })
+    Ok(PrBase { base_name, base_ref, merge_base: mb.to_string(), on_base: mb == head_oid })
 }
 
 pub fn collect_changes(
@@ -313,6 +369,9 @@ pub fn collect_changes(
     let scope_rel = scope.strip_prefix(workdir).unwrap_or(Path::new(""));
     let effective = mode.clone();
     let mut files = diff_files(&repo, &effective)?;
+    if includes_worktree_statuses(&mode) {
+        add_conflicted(&repo, &mut files)?;
+    }
     if include_untracked {
         add_untracked(&repo, &mut files)?;
     }
@@ -321,6 +380,11 @@ pub fn collect_changes(
         for f in &mut files {
             if let Ok(rel) = f.path.strip_prefix(scope_rel) {
                 f.path = rel.to_path_buf();
+            }
+            if let Some(old_path) = &mut f.old_path {
+                if let Ok(rel) = old_path.strip_prefix(scope_rel) {
+                    *old_path = rel.to_path_buf();
+                }
             }
         }
     }
@@ -352,9 +416,26 @@ pub fn collect_default_with_fallback(start: &Path) -> anyhow::Result<Option<Chan
 /// which are expensive to compute). Callers that only need existence can check
 /// `diff.deltas().len()`; `diff_files` adds churn on top.
 fn build_diff<'r>(repo: &'r Repository, mode: &ComparisonMode) -> anyhow::Result<git2::Diff<'r>> {
+    build_diff_for_paths(repo, mode, None)
+}
+
+fn build_diff_for_paths<'r>(
+    repo: &'r Repository,
+    mode: &ComparisonMode,
+    pathspecs: Option<&BTreeSet<PathBuf>>,
+) -> anyhow::Result<git2::Diff<'r>> {
     let mut opts = DiffOptions::new();
-    opts.include_untracked(false).recurse_untracked_dirs(true);
-    let diff = match mode {
+    opts.include_untracked(false)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(true)
+        .include_typechange(true)
+        .include_unreadable(true);
+    if let Some(pathspecs) = pathspecs {
+        for path in pathspecs {
+            opts.pathspec(path.as_path());
+        }
+    }
+    let mut diff = match mode {
         ComparisonMode::Staged => {
             let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
             let idx = repo.index()?;
@@ -387,57 +468,277 @@ fn build_diff<'r>(repo: &'r Repository, mode: &ComparisonMode) -> anyhow::Result
             }
         }
     };
+    let mut find = DiffFindOptions::new();
+    find.renames(true);
+    find.copies(true);
+    find.copies_from_unmodified(true);
+    find.remove_unmodified(true);
+    diff.find_similar(Some(&mut find))?;
     Ok(diff)
 }
 
-fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<FileChange>> {
-    let diff = build_diff(repo, mode)?;
+fn diff_error_is_locked(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<git2::Error>().is_some_and(|e| e.code() == git2::ErrorCode::Locked)
+}
+
+fn mode_uses_workdir_diff(mode: &ComparisonMode) -> bool {
+    matches!(
+        mode,
+        ComparisonMode::Unstaged
+            | ComparisonMode::Uncommitted
+            | ComparisonMode::Against { .. }
+            | ComparisonMode::Pr { committed: false, .. }
+    )
+}
+
+fn status_for_delta(delta: git2::Delta, mode: &ComparisonMode) -> ChangeStatus {
+    match delta {
+        git2::Delta::Deleted => ChangeStatus::Deleted,
+        git2::Delta::Renamed => ChangeStatus::Renamed,
+        git2::Delta::Copied => ChangeStatus::Copied,
+        git2::Delta::Typechange => ChangeStatus::Typechanged,
+        git2::Delta::Conflicted => ChangeStatus::Conflicted,
+        git2::Delta::Unreadable => ChangeStatus::Unreadable,
+        _ => match mode {
+            ComparisonMode::Unstaged => ChangeStatus::Unstaged,
+            _ => ChangeStatus::Staged,
+        },
+    }
+}
+
+fn add_index_paths(repo: &Repository, paths: &mut BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    for entry in repo.index()?.iter() {
+        if let Ok(path) = std::str::from_utf8(&entry.path) {
+            paths.insert(PathBuf::from(path));
+        }
+    }
+    Ok(())
+}
+
+fn add_tree_paths(tree: &git2::Tree<'_>, paths: &mut BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob) {
+            if let Some(name) = entry.name() {
+                paths.insert(Path::new(root).join(name));
+            }
+        }
+        git2::TreeWalkResult::Ok
+    })?;
+    Ok(())
+}
+
+fn tracked_paths_for_workdir_mode(
+    repo: &Repository,
+    mode: &ComparisonMode,
+) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    add_index_paths(repo, &mut paths)?;
+    match mode {
+        ComparisonMode::Uncommitted => {
+            if let Ok(tree) = repo.head().and_then(|h| h.peel_to_tree()) {
+                add_tree_paths(&tree, &mut paths)?;
+            }
+        }
+        ComparisonMode::Against { reference } => {
+            let tree = repo.revparse_single(reference)?.peel_to_tree()?;
+            add_tree_paths(&tree, &mut paths)?;
+        }
+        ComparisonMode::Pr { merge_base, committed: false } => {
+            let tree = repo.revparse_single(merge_base)?.peel_to_tree()?;
+            add_tree_paths(&tree, &mut paths)?;
+        }
+        _ => {}
+    }
+    Ok(paths)
+}
+
+fn unreadable_regular_paths(repo: &Repository, paths: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    let Some(workdir) = repo.workdir() else {
+        return BTreeSet::new();
+    };
+    paths
+        .iter()
+        .filter_map(|path| {
+            let abs = workdir.join(path);
+            let meta = std::fs::symlink_metadata(&abs).ok()?;
+            if !meta.file_type().is_file() {
+                return None;
+            }
+            match std::fs::File::open(&abs) {
+                Ok(_) => None,
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                    Some(path.clone())
+                }
+                Err(_) => None,
+            }
+        })
+        .collect()
+}
+
+fn file_changes_from_diff(
+    diff: &git2::Diff<'_>,
+    mode: &ComparisonMode,
+) -> anyhow::Result<Vec<FileChange>> {
     let mut out = Vec::new();
     for idx in 0..diff.deltas().len() {
         let Some(delta) = diff.get_delta(idx) else { continue };
         let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
             continue;
         };
-        let status = match delta.status() {
-            git2::Delta::Deleted => ChangeStatus::Deleted,
-            git2::Delta::Renamed => ChangeStatus::Renamed,
-            _ => match mode {
-                ComparisonMode::Unstaged => ChangeStatus::Unstaged,
-                _ => ChangeStatus::Staged,
-            },
+        let status = status_for_delta(delta.status(), mode);
+        let old_path = if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) {
+            delta.old_file().path().map(|p| p.to_path_buf())
+        } else {
+            None
         };
         // Per-file line stats; binary or patch-less deltas have no textual churn.
-        let churn = match git2::Patch::from_diff(&diff, idx)? {
-            Some(patch) => {
-                let (_context, added, deleted) = patch.line_stats()?;
-                Churn { added, deleted }
+        let churn = if status == ChangeStatus::Unreadable {
+            Churn::default()
+        } else {
+            match git2::Patch::from_diff(&diff, idx)? {
+                Some(patch) => {
+                    let (_context, added, deleted) = patch.line_stats()?;
+                    Churn { added, deleted }
+                }
+                None => Churn::default(),
             }
-            None => Churn::default(),
         };
-        out.push(FileChange { path: path.to_path_buf(), status, churn });
+        out.push(FileChange { path: path.to_path_buf(), old_path, status, churn });
     }
     Ok(out)
 }
+
+fn diff_files_with_unreadable_fallback(
+    repo: &Repository,
+    mode: &ComparisonMode,
+) -> anyhow::Result<Vec<FileChange>> {
+    let tracked_paths = tracked_paths_for_workdir_mode(repo, mode)?;
+    let unreadable_paths = unreadable_regular_paths(repo, &tracked_paths);
+    if unreadable_paths.is_empty() {
+        return build_diff(repo, mode).and_then(|diff| file_changes_from_diff(&diff, mode));
+    }
+
+    let readable_paths: BTreeSet<PathBuf> =
+        tracked_paths.difference(&unreadable_paths).cloned().collect();
+    let mut out = if readable_paths.is_empty() {
+        Vec::new()
+    } else {
+        let diff = build_diff_for_paths(repo, mode, Some(&readable_paths))?;
+        file_changes_from_diff(&diff, mode)?
+    };
+
+    let existing: BTreeSet<PathBuf> = out.iter().map(|f| f.path.clone()).collect();
+    for path in unreadable_paths {
+        if !existing.contains(&path) {
+            out.push(FileChange {
+                path,
+                old_path: None,
+                status: ChangeStatus::Unreadable,
+                churn: Churn::default(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<FileChange>> {
+    match build_diff(repo, mode) {
+        Ok(diff) => file_changes_from_diff(&diff, mode),
+        Err(err) if mode_uses_workdir_diff(mode) && diff_error_is_locked(&err) => {
+            diff_files_with_unreadable_fallback(repo, mode)
+        }
+        Err(err) => Err(err),
+    }
+}
+fn add_conflicted(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Result<()> {
+    let existing: BTreeSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false).recurse_untracked_dirs(true).include_unreadable(true);
+    let statuses = match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses,
+        Err(err) if err.code() == git2::ErrorCode::Locked => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    for e in statuses.iter() {
+        if e.status().is_conflicted() {
+            if let Some(p) = e.path() {
+                let path = PathBuf::from(p);
+                if !existing.contains(&path) {
+                    files.push(FileChange {
+                        path,
+                        old_path: None,
+                        status: ChangeStatus::Conflicted,
+                        churn: Churn::default(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn status_and_churn_for_untracked(abs: &Path) -> (ChangeStatus, Churn) {
+    match std::fs::read(abs) {
+        Ok(bytes) => {
+            if bytes.contains(&0) {
+                return (ChangeStatus::Untracked, Churn::default());
+            }
+            let added = String::from_utf8(bytes).map(|s| s.lines().count()).unwrap_or(0);
+            (ChangeStatus::Untracked, Churn { added, deleted: 0 })
+        }
+        Err(_) => (ChangeStatus::Unreadable, Churn::default()),
+    }
+}
+
+fn add_untracked_from_workdir_walk(
+    repo: &Repository,
+    files: &mut Vec<FileChange>,
+) -> anyhow::Result<()> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    let mut tracked = BTreeSet::new();
+    add_index_paths(repo, &mut tracked)?;
+    let mut existing: BTreeSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let mut builder = ignore::WalkBuilder::new(workdir);
+    builder.hidden(false).git_ignore(true).filter_entry(|entry| entry.file_name() != ".git");
+    for result in builder.build() {
+        let Ok(entry) = result else { continue };
+        if entry.depth() == 0 || entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(workdir) else { continue };
+        let rel = rel.to_path_buf();
+        if tracked.contains(&rel) || existing.contains(&rel) {
+            continue;
+        }
+        if repo.status_should_ignore(&rel).unwrap_or(false) {
+            continue;
+        }
+        let (status, churn) = status_and_churn_for_untracked(entry.path());
+        files.push(FileChange { path: rel.clone(), old_path: None, status, churn });
+        existing.insert(rel);
+    }
+    Ok(())
+}
+
 fn add_untracked(repo: &Repository, files: &mut Vec<FileChange>) -> anyhow::Result<()> {
     let workdir = repo.workdir();
     let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
-    for e in repo.statuses(Some(&mut opts))?.iter() {
+    opts.include_untracked(true).recurse_untracked_dirs(true).include_unreadable(true);
+    let statuses = match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses,
+        Err(err) if err.code() == git2::ErrorCode::Locked => {
+            return add_untracked_from_workdir_walk(repo, files);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    for e in statuses.iter() {
         if e.status().is_wt_new() {
             if let Some(p) = e.path() {
-                // A new file's entire content counts as additions; binary or
-                // unreadable files contribute no textual churn.
-                let added = workdir
-                    .map(|w| w.join(p))
-                    .and_then(|abs| std::fs::read(abs).ok())
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .map(|s| s.lines().count())
-                    .unwrap_or(0);
-                files.push(FileChange {
-                    path: PathBuf::from(p),
-                    status: ChangeStatus::Untracked,
-                    churn: Churn { added, deleted: 0 },
-                });
+                let (status, churn) = workdir
+                    .map(|w| status_and_churn_for_untracked(&w.join(p)))
+                    .unwrap_or((ChangeStatus::Unreadable, Churn::default()));
+                files.push(FileChange { path: PathBuf::from(p), old_path: None, status, churn });
             }
         }
     }
@@ -447,14 +748,18 @@ fn files_to_maps(files: Vec<FileChange>) -> (BTreeSet<PathBuf>, BTreeMap<PathBuf
     let mut dirset = BTreeSet::new();
     let mut fmap = BTreeMap::new();
     for f in files {
-        for a in f.path.ancestors().skip(1) {
-            if !a.as_os_str().is_empty() {
-                dirset.insert(a.to_path_buf());
-            }
-        }
+        add_ancestor_dirs(&f.path, &mut dirset);
         fmap.insert(f.path.clone(), f);
     }
     (dirset, fmap)
+}
+
+fn add_ancestor_dirs(path: &Path, dirset: &mut BTreeSet<PathBuf>) {
+    for a in path.ancestors().skip(1) {
+        if !a.as_os_str().is_empty() {
+            dirset.insert(a.to_path_buf());
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -485,6 +790,9 @@ pub fn collect_all_files(
         ComparisonMode::Pr { committed, .. } => !committed,
         _ => true,
     };
+    if includes_worktree_statuses(&mode) {
+        add_conflicted(&repo, &mut changed)?;
+    }
     if include_untracked {
         add_untracked(&repo, &mut changed)?;
     }
@@ -496,6 +804,13 @@ pub fn collect_all_files(
             f.path.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
         };
         if let Some(rel) = rel {
+            if let Some(old_path) = &mut f.old_path {
+                if !scope_rel.as_os_str().is_empty() {
+                    if let Ok(old_rel) = old_path.strip_prefix(&scope_rel) {
+                        *old_path = old_rel.to_path_buf();
+                    }
+                }
+            }
             f.path = rel.clone();
             change_map.insert(rel, f);
         }
@@ -529,6 +844,7 @@ pub fn collect_all_files(
     }
     let mut dirset: BTreeSet<PathBuf> = BTreeSet::new();
     let mut fmap: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
+    let mut visible_files: BTreeSet<PathBuf> = BTreeSet::new();
     for result in builder.build() {
         let Ok(entry) = result else { continue };
         if entry.depth() == 0 {
@@ -540,19 +856,33 @@ pub fn collect_all_files(
         if is_dir {
             dirset.insert(rel);
         } else {
-            if opts.dirs_only {
+            if untracked_rel.contains(&rel) {
                 continue;
             }
-            if untracked_rel.contains(&rel) {
+            visible_files.insert(rel.clone());
+            if opts.dirs_only {
                 continue;
             }
             let fc = change_map.get(&rel).cloned().unwrap_or_else(|| FileChange {
                 path: rel.clone(),
+                old_path: None,
                 status: ChangeStatus::Clean,
                 churn: Churn::default(),
             });
             fmap.insert(rel, fc);
         }
+    }
+    for (rel, fc) in change_map {
+        visible_files.insert(rel.clone());
+        if !opts.dirs_only {
+            if !fmap.contains_key(&rel) {
+                add_ancestor_dirs(&rel, &mut dirset);
+                fmap.insert(rel, fc);
+            }
+        }
+    }
+    if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
+        dirset.retain(|dir| visible_files.iter().any(|file| file.starts_with(dir)));
     }
 
     let root_name = if scope_rel.as_os_str().is_empty() {
@@ -563,14 +893,25 @@ pub fn collect_all_files(
     Ok(Some(build_tree(root_name, mode, View::AllFiles, dirset, fmap, None)))
 }
 
+fn includes_worktree_statuses(mode: &ComparisonMode) -> bool {
+    !matches!(mode, ComparisonMode::Range { .. } | ComparisonMode::Pr { committed: true, .. })
+}
+
 fn has_changes(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<bool> {
     // Existence only — avoid the per-file patch/line-count work of diff_files.
-    if build_diff(repo, mode)?.deltas().len() > 0 {
-        return Ok(true);
+    match build_diff(repo, mode) {
+        Ok(diff) if diff.deltas().len() > 0 => return Ok(true),
+        Ok(_) => {}
+        Err(err) if mode_uses_workdir_diff(mode) && diff_error_is_locked(&err) => return Ok(true),
+        Err(err) => return Err(err),
     }
     let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
-    Ok(repo.statuses(Some(&mut opts))?.iter().any(|e| e.status().is_wt_new()))
+    opts.include_untracked(true).recurse_untracked_dirs(true).include_unreadable(true);
+    match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => Ok(statuses.iter().any(|e| e.status().is_wt_new())),
+        Err(err) if err.code() == git2::ErrorCode::Locked => Ok(true),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// All-files view with the same staged -> unstaged auto-fallback as the bare
@@ -635,6 +976,7 @@ fn build_tree(
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.display().to_string()),
                 path: path.display().to_string(),
+                old_path: f.old_path.as_ref().map(|p| p.display().to_string()),
                 kind: NodeKind::File,
                 status: f.status.clone(),
                 churn: f.churn.clone(),
@@ -665,6 +1007,7 @@ fn build_tree(
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| root_name_from_path(path)),
                 path: path.display().to_string(),
+                old_path: None,
                 kind: NodeKind::Directory,
                 status: ChangeStatus::Clean,
                 churn: Churn::default(),
@@ -695,6 +1038,7 @@ fn build_tree(
     let root = TreeNode {
         name: root_name,
         path: "".into(),
+        old_path: None,
         kind: NodeKind::Directory,
         status: ChangeStatus::Clean,
         churn: Churn::default(),
@@ -737,6 +1081,20 @@ mod pr_tests {
         v
     }
 
+    fn dir_paths(tree: &ChangeTree) -> Vec<String> {
+        fn walk(n: &TreeNode, out: &mut Vec<String>) {
+            if n.kind == NodeKind::Directory {
+                out.push(n.path.clone());
+            }
+            for c in &n.children {
+                walk(c, out);
+            }
+        }
+        let mut v = Vec::new();
+        walk(&tree.root, &mut v);
+        v
+    }
+
     fn find_file_churn(tree: &ChangeTree, name: &str) -> Option<Churn> {
         fn walk(n: &TreeNode, name: &str) -> Option<Churn> {
             if n.kind == NodeKind::File && n.name == name {
@@ -750,6 +1108,33 @@ mod pr_tests {
             None
         }
         walk(&tree.root, name)
+    }
+
+    fn find_file_node<'a>(tree: &'a ChangeTree, name: &str) -> Option<&'a TreeNode> {
+        fn walk<'a>(n: &'a TreeNode, name: &str) -> Option<&'a TreeNode> {
+            if n.kind == NodeKind::File && n.name == name {
+                return Some(n);
+            }
+            for c in &n.children {
+                if let Some(found) = walk(c, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(&tree.root, name)
+    }
+
+    fn render_plain_letters(tree: &ChangeTree, root: &Path) -> String {
+        let lsc = lscolors::LsColors::empty();
+        TerminalRenderer {
+            marks: MarkScheme::Letter,
+            format: OutputFormat::Plain,
+            ls_colors: &lsc,
+            root: root.to_path_buf(),
+        }
+        .render(tree)
+        .unwrap()
     }
 
     #[test]
@@ -802,6 +1187,289 @@ mod pr_tests {
         let churn = find_file_churn(&tree, "new.txt").expect("new.txt present");
         assert_eq!(churn.added, 2, "two untracked lines counted");
         assert_eq!(churn.deleted, 0);
+    }
+
+    #[test]
+    fn untracked_binary_file_has_zero_churn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("binary.dat"), b"\0binary\n").unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
+        let node = find_file_node(&tree, "binary.dat").expect("binary.dat present");
+
+        assert_eq!(node.status, ChangeStatus::Untracked);
+        assert_eq!(node.churn, Churn::default());
+    }
+
+    #[test]
+    fn staged_rename_renders_as_single_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("old-name.txt"), "same\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["mv", "old-name.txt", "new-name.txt"]);
+
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("R old-name.txt -> new-name.txt"), "{out}");
+        assert!(!out.contains("D old-name.txt"), "{out}");
+        assert_eq!(tree.summary.files_changed, 1);
+    }
+
+    #[test]
+    fn staged_copy_renders_as_single_copy_with_source_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("source.txt"), "same\nsame\nsame\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::copy(p.join("source.txt"), p.join("copy.txt")).unwrap();
+        git(p, &["add", "copy.txt"]);
+
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("C source.txt => copy.txt"), "{out}");
+        assert!(!out.contains("S copy.txt"), "{out}");
+        assert_eq!(tree.summary.files_changed, 1);
+        let node = find_file_node(&tree, "copy.txt").expect("copy.txt present");
+        assert_eq!(node.status, ChangeStatus::Copied);
+        assert_eq!(node.old_path.as_deref(), Some("source.txt"));
+    }
+
+    #[test]
+    fn copied_display_name_uses_source_arrow() {
+        let node = TreeNode {
+            name: "copy.txt".to_string(),
+            path: "copy.txt".to_string(),
+            old_path: Some("source.txt".to_string()),
+            kind: NodeKind::File,
+            status: ChangeStatus::Copied,
+            churn: Churn::default(),
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+
+        assert_eq!(display_name(&node), "source.txt => copy.txt");
+    }
+
+    #[test]
+    fn copied_and_unreadable_marks_are_distinct() {
+        let copied = TreeNode {
+            name: "copy.txt".to_string(),
+            path: "copy.txt".to_string(),
+            old_path: Some("source.txt".to_string()),
+            kind: NodeKind::File,
+            status: ChangeStatus::Copied,
+            churn: Churn::default(),
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+        let unreadable = TreeNode {
+            name: "locked.txt".to_string(),
+            path: "locked.txt".to_string(),
+            old_path: None,
+            kind: NodeKind::File,
+            status: ChangeStatus::Unreadable,
+            churn: Churn::default(),
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+        let conflict = TreeNode {
+            name: "conflict.txt".to_string(),
+            path: "conflict.txt".to_string(),
+            old_path: None,
+            kind: NodeKind::File,
+            status: ChangeStatus::Conflicted,
+            churn: Churn::default(),
+            rollup: Rollup::default(),
+            children: vec![],
+        };
+
+        assert_eq!(mark(&copied, MarkScheme::Letter), "C");
+        assert_eq!(mark(&copied, MarkScheme::Xy), "C ");
+        assert_eq!(mark(&unreadable, MarkScheme::Letter), "E");
+        assert_eq!(mark(&unreadable, MarkScheme::Xy), "E?");
+        assert_eq!(mark(&conflict, MarkScheme::Letter), "U");
+        assert_eq!(mark(&conflict, MarkScheme::Xy), "UU");
+    }
+
+    #[test]
+    fn unreadable_delta_maps_to_unreadable_status() {
+        assert_eq!(
+            status_for_delta(git2::Delta::Unreadable, &ComparisonMode::Staged),
+            ChangeStatus::Unreadable
+        );
+    }
+
+    #[cfg(unix)]
+    struct ModeGuard {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    #[cfg(unix)]
+    impl Drop for ModeGuard {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_untracked_file_renders_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("seed.txt"), "seed\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+
+        let locked = p.join("locked.txt");
+        std::fs::write(&locked, "secret\n").unwrap();
+        let original_mode = std::fs::metadata(&locked).unwrap().permissions().mode();
+        let _guard = ModeGuard { path: locked.clone(), mode: original_mode };
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("E locked.txt"), "{out}");
+        assert!(!out.contains("? locked.txt"), "{out}");
+        let node = find_file_node(&tree, "locked.txt").expect("locked.txt present");
+        assert_eq!(node.status, ChangeStatus::Unreadable);
+        assert_eq!(node.churn, Churn::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_unreadable_file_renders_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        let tracked = p.join("tracked.txt");
+        std::fs::write(&tracked, "tracked\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+
+        let original_mode = std::fs::metadata(&tracked).unwrap().permissions().mode();
+        let _guard = ModeGuard { path: tracked.clone(), mode: original_mode };
+        std::fs::set_permissions(&tracked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Unstaged, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("E tracked.txt"), "{out}");
+        let node = find_file_node(&tree, "tracked.txt").expect("tracked.txt present");
+        assert_eq!(node.status, ChangeStatus::Unreadable);
+        assert_eq!(node.churn, Churn::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_unreadable_file_does_not_hide_untracked_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        let tracked = p.join("tracked.txt");
+        std::fs::write(&tracked, "tracked\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::write(p.join("untracked.txt"), "new\n").unwrap();
+
+        let original_mode = std::fs::metadata(&tracked).unwrap().permissions().mode();
+        let _guard = ModeGuard { path: tracked.clone(), mode: original_mode };
+        std::fs::set_permissions(&tracked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let tree = collect_changes(p, ComparisonMode::Unstaged, true).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("E tracked.txt"), "{out}");
+        assert!(out.contains("? untracked.txt"), "{out}");
+        assert_eq!(
+            find_file_node(&tree, "untracked.txt").expect("untracked.txt present").status,
+            ChangeStatus::Untracked
+        );
+    }
+
+    #[test]
+    fn staged_typechange_renders_with_typechange_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("typechange.txt"), "plain\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        std::fs::remove_file(p.join("typechange.txt")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("target.txt", p.join("typechange.txt")).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(p.join("typechange.txt"), "target.txt\n").unwrap();
+        git(p, &["add", "-A"]);
+
+        let tree = collect_changes(p, ComparisonMode::Staged, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        #[cfg(unix)]
+        assert!(out.contains("T typechange.txt"), "{out}");
+        #[cfg(not(unix))]
+        assert!(out.contains("S typechange.txt"), "{out}");
+    }
+
+    #[test]
+    fn merge_conflict_renders_with_conflict_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("conflict.txt"), "base\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "base"]);
+        git(p, &["branch", "-M", "main"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("conflict.txt"), "feature\n").unwrap();
+        git(p, &["commit", "-am", "feature"]);
+        git(p, &["checkout", "main"]);
+        std::fs::write(p.join("conflict.txt"), "master\n").unwrap();
+        git(p, &["commit", "-am", "master"]);
+        git(p, &["merge", "feature"]);
+
+        let tree = collect_changes(p, ComparisonMode::Uncommitted, true).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+
+        assert!(out.contains("U conflict.txt"), "{out}");
     }
 
     /// Sets up: c0 (base.txt) on base branch; a `feature` branch with feat.txt;
@@ -863,6 +1531,76 @@ mod pr_tests {
         // all-files view lists every file, but untracked must NOT appear under --committed
         assert!(names.iter().any(|n| n == "base.txt"), "unchanged file listed in all-files view");
         assert!(!names.iter().any(|n| n == "working.txt"), "untracked excluded under committed");
+    }
+
+    #[test]
+    fn pr_all_view_excludes_untracked_only_dirs_when_committed() {
+        let (tmp, c0) = setup_pr_repo();
+        let p = tmp.path();
+        std::fs::create_dir(p.join("scratch")).unwrap();
+        std::fs::write(p.join("scratch/u.txt"), "untracked\n").unwrap();
+
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_all_files(p, mode, opts).unwrap().unwrap();
+        let dirs = dir_paths(&tree);
+
+        assert!(!dirs.iter().any(|d| d == "scratch"), "untracked-only dir excluded");
+    }
+
+    #[test]
+    fn pr_all_dirs_only_keeps_tracked_dirs_when_pruning_untracked_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::create_dir(p.join("src")).unwrap();
+        std::fs::write(p.join("src/base.txt"), "base\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("src/feature.txt"), "feature\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feature"]);
+        std::fs::create_dir(p.join("scratch")).unwrap();
+        std::fs::write(p.join("scratch/u.txt"), "untracked\n").unwrap();
+
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: true };
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_all_files(p, mode, opts).unwrap().unwrap();
+        let dirs = dir_paths(&tree);
+
+        assert!(dirs.iter().any(|d| d == "src"), "tracked dir kept");
+        assert!(!dirs.iter().any(|d| d == "scratch"), "untracked-only dir excluded");
+    }
+
+    #[test]
+    fn pr_all_view_includes_deleted_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(p.join("gone.txt"), "gone\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        git(p, &["rm", "gone.txt"]);
+        git(p, &["commit", "-m", "delete"]);
+
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: false };
+        let tree = collect_all_files(p, mode, opts).unwrap().unwrap();
+        let names = file_names(&tree);
+
+        assert!(names.iter().any(|n| n == "gone.txt"), "deleted file listed in all-files view");
+        assert_eq!(tree.summary.files_changed, 1, "deleted file counted as changed");
     }
 
     /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
@@ -944,6 +1682,34 @@ mod pr_tests {
         assert_eq!(b.base_ref, "origin/main", "remote-tracking ref preferred over local");
         assert_eq!(b.merge_base, c0, "merge-base taken against origin/main (c0)");
     }
+
+    #[test]
+    fn resolve_explicit_override_prefers_exact_ref_over_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join("base.txt"), "x").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["update-ref", "refs/remotes/origin/main", &c0]);
+
+        std::fs::write(p.join("local-main.txt"), "x2").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "local-main"]);
+        let local_main = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("feat.txt"), "y").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feat"]);
+
+        let b = resolve_pr_base(p, Some("main")).unwrap();
+        assert_eq!(b.base_ref, "main", "explicit ref should be resolved exactly");
+        assert_eq!(b.merge_base, local_main, "merge-base taken against local main");
+    }
 }
 
 /// Renders a filename with an LsColors style applied (foreground color +
@@ -1006,7 +1772,8 @@ mod style_name_tests {
     fn style_name_applies_foreground_when_color_on() {
         let _c = crate::test_color::guard();
         colored::control::set_override(true);
-        let style = lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
+        let style =
+            lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
         let out = style_name("file.rs", &style);
         assert!(out.contains("\x1b[32m"), "green ANSI present when color on: {out:?}");
         assert!(out.contains("file.rs"));
@@ -1017,7 +1784,8 @@ mod style_name_tests {
     fn style_name_plain_when_color_off() {
         let _c = crate::test_color::guard();
         colored::control::set_override(false);
-        let style = lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
+        let style =
+            lscolors::Style { foreground: Some(lscolors::Color::Green), ..Default::default() };
         let out = style_name("file.rs", &style);
         assert_eq!(out, "file.rs", "plain when color off");
         colored::control::unset_override();
@@ -1032,6 +1800,7 @@ mod color_tests {
         let staged = TreeNode {
             name: "a.rs".into(),
             path: "a.rs".into(),
+            old_path: None,
             kind: NodeKind::File,
             status: ChangeStatus::Staged,
             churn: Churn { added: 3, deleted: 1 },
@@ -1041,16 +1810,19 @@ mod color_tests {
         let deleted = TreeNode {
             name: "gone.rs".into(),
             path: "gone.rs".into(),
+            old_path: None,
             kind: NodeKind::File,
             status: ChangeStatus::Deleted,
             churn: Churn { added: 0, deleted: 5 },
             rollup: Rollup::default(),
             children: vec![],
         };
-        let summary = Rollup { dirs_touched: 0, files_changed: 2, churn: Churn { added: 3, deleted: 6 } };
+        let summary =
+            Rollup { dirs_touched: 0, files_changed: 2, churn: Churn { added: 3, deleted: 6 } };
         let root = TreeNode {
             name: "repo".into(),
             path: "".into(),
+            old_path: None,
             kind: NodeKind::Directory,
             status: ChangeStatus::Clean,
             churn: Churn::default(),

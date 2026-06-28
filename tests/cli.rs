@@ -9,6 +9,31 @@ use tempfile::tempdir;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+fn help_includes_status_key_and_definitions() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("difftree")?;
+    cmd.arg("--help");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Status key:"))
+        .stdout(predicate::str::contains("Row format:"))
+        .stdout(predicate::str::contains("renamed"))
+        .stdout(predicate::str::contains("old -> new"))
+        .stdout(predicate::str::contains("copied"))
+        .stdout(predicate::str::contains("source => copy"))
+        .stdout(predicate::str::contains("typechanged"))
+        .stdout(predicate::str::contains("file <-> symlink"))
+        .stdout(predicate::str::contains("conflicted"))
+        .stdout(predicate::str::contains("merge/rebase/cherry-pick"))
+        .stdout(predicate::str::contains("unreadable"))
+        .stdout(predicate::str::contains("could not read"))
+        .stdout(predicate::str::contains("C copied"))
+        .stdout(predicate::str::contains("U conflicted"))
+        .stdout(predicate::str::contains("E unreadable"))
+        .stdout(predicate::str::contains("--marks=xy"));
+    Ok(())
+}
+
+#[test]
 fn test_nonexistent_path() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("difftree")?;
     cmd.arg("nonexistent/path/for/testing");
@@ -848,6 +873,29 @@ fn make_pr_repo() -> tempfile::TempDir {
     tmp
 }
 
+fn make_pr_repo_with_src() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path();
+    git_in(p, &["init"]);
+    git_in(p, &["config", "user.email", "t@e.com"]);
+    git_in(p, &["config", "user.name", "T"]);
+    std::fs::create_dir(p.join("src")).unwrap();
+    std::fs::write(p.join("src/base.txt"), "x").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "c0"]);
+    git_in(p, &["branch", "-M", "main"]);
+    git_in(p, &["checkout", "-b", "feature"]);
+    std::fs::write(p.join("src/feature.txt"), "y").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "feat"]);
+    git_in(p, &["checkout", "main"]);
+    std::fs::write(p.join("src/main2.txt"), "z").unwrap();
+    git_in(p, &["add", "."]);
+    git_in(p, &["commit", "-m", "main2"]);
+    git_in(p, &["checkout", "feature"]);
+    tmp
+}
+
 #[test]
 fn pr_default_shows_branch_and_working_not_base() {
     let tmp = make_pr_repo();
@@ -860,6 +908,65 @@ fn pr_default_shows_branch_and_working_not_base() {
         .stdout(predicate::str::contains("feat.txt"))
         .stdout(predicate::str::contains("working.txt"))
         .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_path_after_flag_is_scope_not_base_ref() {
+    let tmp = make_pr_repo_with_src();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("src")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature.txt"))
+        .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_equals_base_accepts_path_scope() {
+    let tmp = make_pr_repo_with_src();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr=main")
+        .arg("src")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature.txt"))
+        .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_base_option_accepts_path_scope() {
+    let tmp = make_pr_repo_with_src();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr")
+        .arg("--pr-base")
+        .arg("main")
+        .arg("src")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature.txt"))
+        .stdout(predicate::str::contains("main2.txt").not());
+}
+
+#[test]
+fn pr_inline_base_and_pr_base_cannot_both_be_used() {
+    let tmp = make_pr_repo_with_src();
+    Command::cargo_bin("difftree")
+        .unwrap()
+        .arg("--pr=main")
+        .arg("--pr-base")
+        .arg("origin/main")
+        .arg("src")
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("use either --pr=<ref> or --pr-base <ref>"));
 }
 
 #[test]
@@ -924,8 +1031,7 @@ fn pr_bad_ref_errors() {
     let tmp = make_pr_repo();
     Command::cargo_bin("difftree")
         .unwrap()
-        .arg("--pr")
-        .arg("does-not-exist-xyz")
+        .arg("--pr=does-not-exist-xyz")
         .current_dir(tmp.path())
         .assert()
         .failure()

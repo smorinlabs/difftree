@@ -41,13 +41,17 @@ Two endpoints, one default:
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--pr [<ref>]` | `pr: Option<Option<String>>`, `num_args(0..=1)` | Enable PR mode. No value → auto-detect base; `--pr develop` → override base ref. |
+| `--pr[=<ref>]` | `pr: Option<Option<String>>`, `num_args(0..=1)`, `require_equals(true)` | Enable PR mode. No value → auto-detect base; `--pr=develop` → override base ref. A following token remains the positional path scope. |
+| `--pr-base <ref>` | `pr_base: Option<String>`, `requires("pr")` | Long-form explicit base override, useful with path scopes: `--pr --pr-base develop src`. |
 | `--committed` | `bool`, `requires("pr")` | Narrow endpoint to `merge-base → HEAD` (committed branch commits only). |
 
 - `--pr` is mutually exclusive with the other comparison flags:
   `conflicts_with_all = ["range", "against", "staged", "unstaged", "uncommitted"]` (clap-enforced).
+- Inline `--pr=<ref>` and `--pr-base <ref>` are mutually exclusive by runtime validation.
 - `--committed` without `--pr` is a clap error (`requires`).
 - Composes freely with views/format flags: `--all`, `--json`, `--marks`, `-L`, `-d`, sorting.
+- Composes with path scopes: `difftree --pr src`, `difftree --pr=main src`, and
+  `difftree --pr --pr-base main src`.
 
 ## 4. Base resolution — new `lib.rs` helper
 
@@ -65,13 +69,15 @@ pub fn resolve_pr_base(start: &Path, base_override: Option<&str>) -> anyhow::Res
 Algorithm:
 
 1. **Candidate base names** (in order, deduped):
-   - override given → `[override]`
+   - override given by `--pr=<ref>` or `--pr-base <ref>` → resolve the exact ref first
    - else → `[<origin/HEAD default branch>, "main", "master"]`
      (the origin default is read from the `origin/HEAD` symbolic ref when present).
-2. **Resolve each candidate, preferring the remote:** for each name try `origin/<name>`,
-   then local `<name>`; the first that resolves wins and fixes `base_ref` / `base_name`.
+2. **Resolve each auto-detected candidate, preferring the remote:** for each name try
+   `origin/<name>`, then local `<name>`; the first that resolves wins and fixes
+   `base_ref` / `base_name`. Explicit overrides use the exact ref first, then fall back to
+   `origin/<name>` only for short branch names that do not resolve locally.
 3. If **no** candidate resolves → hard error:
-   `could not resolve base branch (tried: …); pass one with --pr <ref>`.
+   `could not resolve base branch (tried: …); pass one with --pr=<ref> or --pr-base <ref>`.
 4. Compute `merge_base = repo.merge_base(base_commit, HEAD)`. Unrelated histories
    (no common ancestor) → hard error. Set `on_base = (merge_base == HEAD)`.
 
@@ -100,21 +106,21 @@ Status mapping reuses the existing `diff.foreach` logic unchanged.
 
 | Case | Behavior |
 |---|---|
-| Base unresolvable / bad `--pr <ref>` | Hard error with guidance to pass `--pr <ref>` |
+| Base unresolvable / bad `--pr=<ref>` or `--pr-base <ref>` | Hard error with guidance to pass `--pr=<ref>` or `--pr-base <ref>` |
 | No merge-base (unrelated histories) | Hard error |
 | On base branch (merge-base == HEAD) | Warn to stderr, then show uncommitted-only (default) / empty (`--committed`) |
 | Outside a git repo | Hard error (explicit mode — no plain-tree fallback) |
-| `--committed` without `--pr`, or `--pr` + another comparison flag | clap usage error |
+| `--committed` without `--pr`, `--pr` + another comparison flag, or both base override forms | clap/runtime usage error |
 
 ## 8. Affected components
 
 | File | Change |
 |---|---|
-| `src/app.rs` | Add `pr: Option<Option<String>>` and `committed: bool` to `ViewArgs` with conflicts/requires. |
+| `src/app.rs` | Add `pr: Option<Option<String>>`, `pr_base: Option<String>`, and `committed: bool` to `ViewArgs` with conflicts/requires. |
 | `src/lib.rs` | Add `ComparisonMode::Pr { merge_base, committed }`; add `PrBase` + `resolve_pr_base`; add the `Pr` arm to `diff_files`; ensure `collect_changes`/`collect_all_files` handle it. |
 | `src/main.rs` | Resolve base, emit on-base warning, slot `Pr` into mode selection / `explicit_mode` / `wants_plain_tree`; set `include_untracked = !committed`. |
 | tests (`lib.rs` `#[cfg(test)]`, mirroring existing git2 temp-repo tests) | New behavioral tests (§9). |
-| `README.md` | Add `--pr`, `--pr <ref>`, `--committed` to the comparison-modes section (currently line ~284). |
+| `README.md` | Add `--pr`, `--pr=<ref>`, `--pr-base <ref>`, path scopes, and `--committed` to the comparison-modes section. |
 
 ## 9. Test plan (behavioral — git2 temp repos)
 
@@ -122,9 +128,11 @@ Status mapping reuses the existing `diff.foreach` logic unchanged.
   `main` with an unrelated change → that main-only change is **absent** from `--pr` output.
 - **Endpoints:** default includes uncommitted + untracked; `--committed` excludes both and shows
   only branch commits.
-- **Override:** `--pr <ref>` resolves a valid ref; a bad `--pr <ref>` hard-errors.
-- **Remote preference:** with `origin/main` ahead of a stale local `main`, the merge-base is taken
-  against `origin/main`.
+- **Override:** `--pr=<ref>` and `--pr-base <ref>` resolve valid refs; bad explicit refs hard-error.
+- **Path disambiguation:** `--pr src` scopes to path `src`; `--pr=main src` and
+  `--pr --pr-base main src` combine explicit base and path scope.
+- **Remote preference:** auto-detection prefers `origin/main`; explicit `--pr=main` resolves local
+  `main` exactly first.
 - **On base branch:** running `--pr` on `main` warns and shows uncommitted-only; `--pr --committed`
   on `main` is empty.
 - **Auto-detect fallthrough:** repo with `master` (no `main`) resolves `master`.
