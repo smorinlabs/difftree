@@ -875,6 +875,7 @@ fn make_pr_repo() -> tempfile::TempDir {
     std::fs::write(p.join("main2.txt"), "z").unwrap();
     git_in(p, &["add", "."]);
     git_in(p, &["commit", "-m", "main2"]);
+    git_in(p, &["update-ref", "refs/remotes/origin/main", "main"]);
     git_in(p, &["checkout", "feature"]);
     std::fs::write(p.join("working.txt"), "w").unwrap(); // untracked
     tmp
@@ -899,6 +900,7 @@ fn make_pr_repo_with_src() -> tempfile::TempDir {
     std::fs::write(p.join("src/main2.txt"), "z").unwrap();
     git_in(p, &["add", "."]);
     git_in(p, &["commit", "-m", "main2"]);
+    git_in(p, &["update-ref", "refs/remotes/origin/main", "main"]);
     git_in(p, &["checkout", "feature"]);
     tmp
 }

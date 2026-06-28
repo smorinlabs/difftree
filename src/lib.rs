@@ -376,19 +376,7 @@ pub fn collect_changes(
     if include_untracked {
         add_untracked(&repo, &mut files)?;
     }
-    files.retain(|f| scope_rel.as_os_str().is_empty() || f.path.starts_with(scope_rel));
-    if !scope_rel.as_os_str().is_empty() {
-        for f in &mut files {
-            if let Ok(rel) = f.path.strip_prefix(scope_rel) {
-                f.path = rel.to_path_buf();
-            }
-            if let Some(old_path) = &mut f.old_path {
-                if let Ok(rel) = old_path.strip_prefix(scope_rel) {
-                    *old_path = rel.to_path_buf();
-                }
-            }
-        }
-    }
+    files = files.into_iter().filter_map(|f| scoped_file_change(f, scope_rel)).collect();
     let root_name = if scope_rel.as_os_str().is_empty() {
         workdir.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string()
     } else {
@@ -507,6 +495,43 @@ fn status_for_delta(delta: git2::Delta, mode: &ComparisonMode) -> ChangeStatus {
     }
 }
 
+fn pr_worktree_status_overrides(
+    repo: &Repository,
+) -> anyhow::Result<BTreeMap<PathBuf, ChangeStatus>> {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false).recurse_untracked_dirs(true).include_unreadable(true);
+    let statuses = match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses,
+        Err(err) if err.code() == git2::ErrorCode::Locked => return Ok(BTreeMap::new()),
+        Err(err) => return Err(err.into()),
+    };
+    let mut out = BTreeMap::new();
+    for entry in statuses.iter() {
+        let Some(path) = entry.path() else { continue };
+        let status = entry.status();
+        let change_status = if status.is_wt_modified()
+            || status.is_wt_deleted()
+            || status.is_wt_typechange()
+            || status.is_wt_renamed()
+        {
+            Some(ChangeStatus::Unstaged)
+        } else if status.is_index_new()
+            || status.is_index_modified()
+            || status.is_index_deleted()
+            || status.is_index_typechange()
+            || status.is_index_renamed()
+        {
+            Some(ChangeStatus::Staged)
+        } else {
+            None
+        };
+        if let Some(change_status) = change_status {
+            out.insert(PathBuf::from(path), change_status);
+        }
+    }
+    Ok(out)
+}
+
 fn add_index_paths(repo: &Repository, paths: &mut BTreeSet<PathBuf>) -> anyhow::Result<()> {
     for entry in repo.index()?.iter() {
         if let Ok(path) = std::str::from_utf8(&entry.path) {
@@ -577,16 +602,27 @@ fn unreadable_regular_paths(repo: &Repository, paths: &BTreeSet<PathBuf>) -> BTr
 }
 
 fn file_changes_from_diff(
+    repo: &Repository,
     diff: &git2::Diff<'_>,
     mode: &ComparisonMode,
 ) -> anyhow::Result<Vec<FileChange>> {
+    let pr_worktree_statuses = if matches!(mode, ComparisonMode::Pr { committed: false, .. }) {
+        pr_worktree_status_overrides(repo)?
+    } else {
+        BTreeMap::new()
+    };
     let mut out = Vec::new();
     for idx in 0..diff.deltas().len() {
         let Some(delta) = diff.get_delta(idx) else { continue };
         let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
             continue;
         };
-        let status = status_for_delta(delta.status(), mode);
+        let mut status = status_for_delta(delta.status(), mode);
+        if status == ChangeStatus::Staged {
+            if let Some(worktree_status) = pr_worktree_statuses.get(path) {
+                status = worktree_status.clone();
+            }
+        }
         let old_path = if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) {
             delta.old_file().path().map(|p| p.to_path_buf())
         } else {
@@ -616,7 +652,7 @@ fn diff_files_with_unreadable_fallback(
     let tracked_paths = tracked_paths_for_workdir_mode(repo, mode)?;
     let unreadable_paths = unreadable_regular_paths(repo, &tracked_paths);
     if unreadable_paths.is_empty() {
-        return build_diff(repo, mode).and_then(|diff| file_changes_from_diff(&diff, mode));
+        return build_diff(repo, mode).and_then(|diff| file_changes_from_diff(repo, &diff, mode));
     }
 
     let readable_paths: BTreeSet<PathBuf> =
@@ -625,7 +661,7 @@ fn diff_files_with_unreadable_fallback(
         Vec::new()
     } else {
         let diff = build_diff_for_paths(repo, mode, Some(&readable_paths))?;
-        file_changes_from_diff(&diff, mode)?
+        file_changes_from_diff(repo, &diff, mode)?
     };
 
     let existing: BTreeSet<PathBuf> = out.iter().map(|f| f.path.clone()).collect();
@@ -644,7 +680,7 @@ fn diff_files_with_unreadable_fallback(
 
 fn diff_files(repo: &Repository, mode: &ComparisonMode) -> anyhow::Result<Vec<FileChange>> {
     match build_diff(repo, mode) {
-        Ok(diff) => file_changes_from_diff(&diff, mode),
+        Ok(diff) => file_changes_from_diff(repo, &diff, mode),
         Err(err) if mode_uses_workdir_diff(mode) && diff_error_is_locked(&err) => {
             diff_files_with_unreadable_fallback(repo, mode)
         }
@@ -728,19 +764,52 @@ fn untracked_paths_from_workdir_walk(repo: &Repository) -> anyhow::Result<BTreeS
     Ok(out)
 }
 
-fn untracked_paths(repo: &Repository) -> anyhow::Result<BTreeSet<PathBuf>> {
+fn worktree_only_paths_from_workdir_walk(repo: &Repository) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(BTreeSet::new());
+    };
+    let mut tracked = BTreeSet::new();
+    add_index_paths(repo, &mut tracked)?;
+    let mut out = BTreeSet::new();
+    let mut builder = ignore::WalkBuilder::new(workdir);
+    builder.hidden(false).git_ignore(false).filter_entry(|entry| entry.file_name() != ".git");
+    for result in builder.build() {
+        let Ok(entry) = result else { continue };
+        if entry.depth() == 0 || entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(workdir) else { continue };
+        let rel = rel.to_path_buf();
+        if !tracked.contains(&rel) {
+            out.insert(rel);
+        }
+    }
+    Ok(out)
+}
+
+fn worktree_only_paths(repo: &Repository) -> anyhow::Result<BTreeSet<PathBuf>> {
     let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true).include_unreadable(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true)
+        .recurse_ignored_dirs(true)
+        .include_unreadable(true);
     let statuses = match repo.statuses(Some(&mut opts)) {
         Ok(statuses) => statuses,
         Err(err) if err.code() == git2::ErrorCode::Locked => {
-            return untracked_paths_from_workdir_walk(repo);
+            return worktree_only_paths_from_workdir_walk(repo);
         }
         Err(err) => return Err(err.into()),
     };
     Ok(statuses
         .iter()
-        .filter_map(|e| if e.status().is_wt_new() { e.path().map(PathBuf::from) } else { None })
+        .filter_map(|e| {
+            if e.status().is_wt_new() || e.status().is_ignored() {
+                e.path().map(PathBuf::from)
+            } else {
+                None
+            }
+        })
         .collect())
 }
 
@@ -805,6 +874,39 @@ fn add_ancestor_dirs(path: &Path, dirset: &mut BTreeSet<PathBuf>) {
     }
 }
 
+fn scoped_file_change(mut f: FileChange, scope_rel: &Path) -> Option<FileChange> {
+    if scope_rel.as_os_str().is_empty() {
+        return Some(f);
+    }
+
+    if f.path.starts_with(scope_rel) {
+        f.path = f.path.strip_prefix(scope_rel).ok()?.to_path_buf();
+        if let Some(old_path) = &mut f.old_path {
+            if let Ok(old_rel) = old_path.strip_prefix(scope_rel) {
+                *old_path = old_rel.to_path_buf();
+            }
+        }
+        return Some(f);
+    }
+
+    if f.status == ChangeStatus::Renamed {
+        if let Some(old_path) = f.old_path.take() {
+            if let Ok(old_rel) = old_path.strip_prefix(scope_rel) {
+                f.path = old_rel.to_path_buf();
+                f.status = ChangeStatus::Deleted;
+                return Some(f);
+            }
+        }
+    }
+
+    None
+}
+
+fn path_matches_worktree_only(rel: &Path, worktree_only: &BTreeSet<PathBuf>) -> bool {
+    worktree_only.contains(rel)
+        || rel.ancestors().skip(1).any(|parent| worktree_only.contains(parent))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WalkOpts {
     pub all: bool,
@@ -840,31 +942,18 @@ pub fn collect_all_files(
         add_untracked(&repo, &mut changed)?;
     }
     let mut change_map: BTreeMap<PathBuf, FileChange> = BTreeMap::new();
-    for mut f in changed {
-        let rel = if scope_rel.as_os_str().is_empty() {
-            Some(f.path.clone())
-        } else {
-            f.path.strip_prefix(&scope_rel).ok().map(|r| r.to_path_buf())
-        };
-        if let Some(rel) = rel {
-            if let Some(old_path) = &mut f.old_path {
-                if !scope_rel.as_os_str().is_empty() {
-                    if let Ok(old_rel) = old_path.strip_prefix(&scope_rel) {
-                        *old_path = old_rel.to_path_buf();
-                    }
-                }
-            }
-            f.path = rel.clone();
-            change_map.insert(rel, f);
+    for f in changed {
+        if let Some(f) = scoped_file_change(f, &scope_rel) {
+            change_map.insert(f.path.clone(), f);
         }
     }
 
-    // For Pr committed mode, build a set of untracked paths to exclude from the
-    // filesystem walk (the change_map guard above only controls status labels,
+    // For Pr committed mode, build a set of worktree-only paths to exclude from
+    // the filesystem walk (the change_map guard above only controls status labels,
     // not which entries the walker surfaces).
-    let untracked_rel: BTreeSet<PathBuf> =
+    let worktree_only_rel: BTreeSet<PathBuf> =
         if matches!(mode, ComparisonMode::Pr { committed: true, .. }) {
-            untracked_paths(&repo)?
+            worktree_only_paths(&repo)?
                 .into_iter()
                 .filter_map(|f| {
                     if scope_rel.as_os_str().is_empty() {
@@ -896,9 +985,12 @@ pub fn collect_all_files(
         let rel = rel.to_path_buf();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir {
+            if path_matches_worktree_only(&rel, &worktree_only_rel) {
+                continue;
+            }
             dirset.insert(rel);
         } else {
-            if untracked_rel.contains(&rel) {
+            if path_matches_worktree_only(&rel, &worktree_only_rel) {
                 continue;
             }
             visible_files.insert(rel.clone());
@@ -1418,10 +1510,21 @@ mod pr_tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn unreadable_untracked_file_renders_read_error() {
+    fn make_unreadable_or_skip(path: &Path) -> Option<ModeGuard> {
         use std::os::unix::fs::PermissionsExt;
 
+        let original_mode = std::fs::metadata(path).unwrap().permissions().mode();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(path).is_ok() {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(original_mode));
+            return None;
+        }
+        Some(ModeGuard { path: path.to_path_buf(), mode: original_mode })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_untracked_file_renders_read_error() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path();
         git(p, &["init"]);
@@ -1433,9 +1536,7 @@ mod pr_tests {
 
         let locked = p.join("locked.txt");
         std::fs::write(&locked, "secret\n").unwrap();
-        let original_mode = std::fs::metadata(&locked).unwrap().permissions().mode();
-        let _guard = ModeGuard { path: locked.clone(), mode: original_mode };
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let Some(_guard) = make_unreadable_or_skip(&locked) else { return };
 
         let tree = collect_changes(p, ComparisonMode::Staged, true).unwrap().unwrap();
         let out = render_plain_letters(&tree, p);
@@ -1450,8 +1551,6 @@ mod pr_tests {
     #[cfg(unix)]
     #[test]
     fn tracked_unreadable_file_renders_read_error() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path();
         git(p, &["init"]);
@@ -1462,9 +1561,7 @@ mod pr_tests {
         git(p, &["add", "."]);
         git(p, &["commit", "-m", "c0"]);
 
-        let original_mode = std::fs::metadata(&tracked).unwrap().permissions().mode();
-        let _guard = ModeGuard { path: tracked.clone(), mode: original_mode };
-        std::fs::set_permissions(&tracked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let Some(_guard) = make_unreadable_or_skip(&tracked) else { return };
 
         let tree = collect_changes(p, ComparisonMode::Unstaged, false).unwrap().unwrap();
         let out = render_plain_letters(&tree, p);
@@ -1478,8 +1575,6 @@ mod pr_tests {
     #[cfg(unix)]
     #[test]
     fn tracked_unreadable_file_does_not_hide_untracked_files() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path();
         git(p, &["init"]);
@@ -1491,9 +1586,7 @@ mod pr_tests {
         git(p, &["commit", "-m", "c0"]);
         std::fs::write(p.join("untracked.txt"), "new\n").unwrap();
 
-        let original_mode = std::fs::metadata(&tracked).unwrap().permissions().mode();
-        let _guard = ModeGuard { path: tracked.clone(), mode: original_mode };
-        std::fs::set_permissions(&tracked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let Some(_guard) = make_unreadable_or_skip(&tracked) else { return };
 
         let tree = collect_changes(p, ComparisonMode::Unstaged, true).unwrap().unwrap();
         let out = render_plain_letters(&tree, p);
@@ -1607,6 +1700,21 @@ mod pr_tests {
     }
 
     #[test]
+    fn pr_default_marks_worktree_edits_as_unstaged() {
+        let (tmp, c0) = setup_pr_repo();
+        let p = tmp.path();
+        std::fs::write(p.join("base.txt"), "edited\n").unwrap();
+
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: false };
+        let tree = collect_changes(p, mode, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, p);
+        let node = find_file_node(&tree, "base.txt").expect("base.txt present");
+
+        assert_eq!(node.status, ChangeStatus::Unstaged);
+        assert!(out.contains("M base.txt"), "{out}");
+    }
+
+    #[test]
     fn pr_all_view_excludes_untracked_when_committed() {
         let (tmp, c0) = setup_pr_repo();
         let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
@@ -1616,6 +1724,34 @@ mod pr_tests {
         // all-files view lists every file, but untracked must NOT appear under --committed
         assert!(names.iter().any(|n| n == "base.txt"), "unchanged file listed in all-files view");
         assert!(!names.iter().any(|n| n == "working.txt"), "untracked excluded under committed");
+    }
+
+    #[test]
+    fn pr_all_view_excludes_ignored_files_when_committed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::write(p.join(".gitignore"), "ignored.log\n").unwrap();
+        std::fs::write(p.join("base.txt"), "base\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::write(p.join("feature.txt"), "feature\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "feature"]);
+        std::fs::write(p.join("ignored.log"), "ignored\n").unwrap();
+
+        let opts = WalkOpts { all: false, gitignore: false, level: None, dirs_only: false };
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_all_files(p, mode, opts).unwrap().unwrap();
+        let names = file_names(&tree);
+
+        assert!(names.iter().any(|n| n == "feature.txt"), "branch file shown");
+        assert!(!names.iter().any(|n| n == "ignored.log"), "ignored worktree file excluded");
     }
 
     #[test]
@@ -1686,6 +1822,36 @@ mod pr_tests {
 
         assert!(names.iter().any(|n| n == "gone.txt"), "deleted file listed in all-files view");
         assert_eq!(tree.summary.files_changed, 1, "deleted file counted as changed");
+    }
+
+    #[test]
+    fn scoped_pr_committed_includes_file_moved_out_as_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@e.com"]);
+        git(p, &["config", "user.name", "T"]);
+        std::fs::create_dir(p.join("src")).unwrap();
+        std::fs::write(p.join("src/a.txt"), "a\n").unwrap();
+        std::fs::write(p.join("src/keep.txt"), "keep\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "c0"]);
+        git(p, &["branch", "-M", "main"]);
+        let c0 = git_out(p, &["rev-parse", "HEAD"]);
+        git(p, &["checkout", "-b", "feature"]);
+        std::fs::create_dir(p.join("other")).unwrap();
+        git(p, &["mv", "src/a.txt", "other/a.txt"]);
+        git(p, &["commit", "-m", "move out"]);
+
+        let mode = ComparisonMode::Pr { merge_base: c0, committed: true };
+        let tree = collect_changes(&p.join("src"), mode, false).unwrap().unwrap();
+        let out = render_plain_letters(&tree, &p.join("src"));
+        let node = find_file_node(&tree, "a.txt").expect("moved-out file present");
+
+        assert_eq!(node.status, ChangeStatus::Deleted);
+        assert_eq!(node.path, "a.txt");
+        assert!(out.contains("D a.txt"), "{out}");
+        assert!(!out.contains("other/a.txt"), "{out}");
     }
 
     /// Repo with a `main` branch (c0) and a `feature` branch (c0 + feat).
