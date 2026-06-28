@@ -286,8 +286,18 @@ The v0.2 implementation introduces the git-aware blast-radius surface described 
 - Comparison views (`--pr`, `--staged`, `--all`, …) are colorized when color is enabled
   (status marks by git state, `+N` green / `−M` red churn, and filenames via `LS_COLORS`).
   Honors `--color=<when>`, `--force-color`/`-C`, `NO_COLOR`, and auto-disables when piped.
+- Every comparison view renders a context header above the tree. For example, `--pr`
+  renders `PR: origin/main...feature · working tree` (or `· committed` with
+  `--committed`), while `--against <ref>`, `--range <A..B>`, `--staged`,
+  `--unstaged`, and `--uncommitted` render mode-specific headers.
+- The footer keeps the existing directory/churn summary and adds a GitHub-style
+  change-kind count. A single-kind set collapses to `2 files modified`; mixed sets
+  render inline, such as `3 files changed (1 added · 1 modified · 1 deleted)`.
 - `--tree` renders a full status-marked tree; `--plain`/`--no-git` preserves classic tree behavior.
-- `--json` serializes the shared core model with `schema_version: "difftree.v1"`.
+- `--json` serializes the shared core model with `schema_version: "difftree.v2"`.
+  Changed file nodes expose their delta kind as `kind` (`added`, `modified`,
+  `deleted`, `renamed`, `copied`, `typechanged`, `conflicted`, or `unreadable`);
+  structural node type is `node_kind`.
 - `--marks=symbol|letter|xy` controls status marks; `--heat=color,bar,badge` records the v1 heat-component grammar.
 
 See `docs/specs/difftree-decisions-v0.2.md` for the locked flag table and JSON contract.
