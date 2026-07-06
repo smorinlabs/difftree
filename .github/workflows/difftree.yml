@@ -1,0 +1,26 @@
+# Dogfood the released difftree GitHub Action: post a diff-tree comment
+# (rendered by `difftree --pr`) on every pull request in this repo.
+name: difftree PR comment
+
+on:
+  pull_request:
+
+concurrency:
+  group: difftree-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  diff-tree:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is required: the action runs `difftree --pr`, which
+      # needs the base branch history to compute the merge-base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: smorinlabs/difftree-action@v0.1.0
