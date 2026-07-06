@@ -1,0 +1,133 @@
+name: release-binaries
+
+# Builds prebuilt difftree binaries for the five supported platforms and
+# ATTACHES them as assets to an existing GitHub Release. Releases themselves
+# are created by release-please (see release-please.yml); this workflow never
+# creates or edits a release — it only uploads assets to one.
+#
+# Triggers:
+#   - `release: published` — fires automatically when release-please publishes
+#     a new release.
+#   - `workflow_dispatch` with a `tag` input — backfills binaries onto an
+#     existing release, e.g.:
+#       gh workflow run release-binaries.yml -f tag=v0.3.0
+#
+# Asset naming scheme (STABLE CONTRACT — difftree-action constructs download
+# URLs from it; do not change without updating that action):
+#
+#   difftree-<tag>-<target>.<ext>          the archive (contains the difftree
+#                                          binary, LICENSE, and README.md at
+#                                          the archive root)
+#   difftree-<tag>-<target>.<ext>.sha256   its SHA-256 checksum
+#
+#   | OS / arch             | target                     | ext     |
+#   |-----------------------|----------------------------|---------|
+#   | Linux x86_64 (glibc)  | x86_64-unknown-linux-gnu   | .tar.gz |
+#   | Linux aarch64 (glibc) | aarch64-unknown-linux-gnu  | .tar.gz |
+#   | macOS x86_64 (Intel)  | x86_64-apple-darwin        | .tar.gz |
+#   | macOS aarch64 (M-ser) | aarch64-apple-darwin       | .tar.gz |
+#   | Windows x86_64 (MSVC) | x86_64-pc-windows-msvc     | .zip    |
+#
+#   Example: difftree-v0.3.0-aarch64-apple-darwin.tar.gz
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach binaries to (e.g. v0.3.0)"
+        required: true
+        type: string
+
+# Deny-all at the top level; the build job re-grants only what it needs.
+permissions: {}
+
+concurrency:
+  # One run per tag; never cancel an in-flight run — a cancelled upload could
+  # leave a release with a partial asset set.
+  group: release-binaries-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # gh release upload
+    strategy:
+      fail-fast: false # one platform failing must not cancel the others
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-15-intel # macos-13 was retired; this is the current Intel runner
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    env:
+      # workflow_dispatch input wins; otherwise the release that fired us.
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build exactly what the tag points at (matters for backfills, where
+          # the default ref would be main, not the released commit).
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          case "${TARGET}" in
+            *windows*) BIN="difftree.exe" ;;
+            *)         BIN="difftree" ;;
+          esac
+
+          STAGE="$(mktemp -d)"
+          cp "target/${TARGET}/release/${BIN}" LICENSE README.md "${STAGE}/"
+
+          ASSET_BASE="difftree-${TAG}-${TARGET}"
+          case "${TARGET}" in
+            *windows*)
+              ASSET="${ASSET_BASE}.zip"
+              OUT_DIR="${PWD}"
+              (cd "${STAGE}" && 7z a "${OUT_DIR}/${ASSET}" "${BIN}" LICENSE README.md)
+              ;;
+            *)
+              ASSET="${ASSET_BASE}.tar.gz"
+              tar -czf "${ASSET}" -C "${STAGE}" "${BIN}" LICENSE README.md
+              ;;
+          esac
+
+          # sha256sum on Linux/Windows (Git Bash); shasum on macOS.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ASSET}" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "${ASSET}" > "${ASSET}.sha256"
+          fi
+
+          echo "ASSET=${ASSET}" >> "${GITHUB_ENV}"
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" "${ASSET}" "${ASSET}.sha256" --clobber
