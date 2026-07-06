@@ -24,7 +24,7 @@ A fast, minimalist, git-aware directory tree viewer, written in Rust.
 ## Features
 
   - **Git-aware comparison views:**
-      - `--pr`: PR-style diff for the current branch — everything changed since it diverged from the base (merge-base → HEAD), **including uncommitted changes by default**; add `--committed` to show committed changes only. Base is auto-detected (`origin` default → `main` → `master`); override with `--pr=<ref>` or `--pr-base <ref>`.
+      - `--pr`: PR-style diff for the current branch — everything changed since it diverged from the base (merge-base → HEAD), **including uncommitted changes by default**; add `--committed` to show committed changes only. Base is auto-detected (`origin` default → `main` → `master`); override with `--pr=<ref>` (or `--pr --pr-base <ref>` — `--pr-base` requires `--pr`).
       - `--against <ref>` and `--range <a..b>` for explicit ref and range comparisons.
       - `--staged` (alias `--cached`), `--unstaged`, and `--uncommitted` working-tree comparisons.
       - All-files view (`--all`, alias `--tree`): the complete directory tree with change marks overlaid.
@@ -82,7 +82,7 @@ Note that `PATH` defaults to the current directory (`.`) if not specified.
 
 | Option                 | Description                                                                 |
 | :--------------------- | :-------------------------------------------------------------------------- |
-| `-a`, `--show-all`     | List all files and directories, including hidden ones.                      |
+| `-a`, `--show-all`     | List all files and directories, including hidden ones. (Interactive mode uses `-a`, `--all`.) |
 | `--all` (alias `--tree`)| Render the all-files view: the complete tree with git change marks overlaid. |
 | `--color <WHEN>`       | Specify when to use color output (`always`, `auto`, `never`).               |
 | `-d`, `--dirs-only`    | List directories only, ignoring all files.                                  |
@@ -307,7 +307,7 @@ difftree's git-aware blast-radius surface (introduced in v0.2 per `docs/PRD/diff
 - Bare `difftree` in a git repository shows staged blast radius and falls back with `No staged changes — showing unstaged blast radius` when staged changes are empty.
 - Comparison modes: `--staged` (alias `--cached`), `--unstaged`, `--uncommitted` (staged + unstaged + untracked vs `HEAD`), `--range <A..B>`, and `--against <ref>`.
 - All-files view (`--all`, alias `--tree`): renders the complete directory tree with git change marks overlaid; unchanged files are shown as `Clean`.
-- `--pr` shows the PR-style diff for the current branch: everything changed since it diverged from the base (the merge-base). The base auto-detects (`origin` default → `main` → `master`, preferring the `origin/<name>` remote ref); pass `--pr=<ref>` or `--pr-base <ref>` to override. Positional paths remain path scopes, so `difftree --pr src` means "show the PR diff under `src`." Default endpoint is the working tree (commits + staged + unstaged + untracked); add `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
+- `--pr` shows the PR-style diff for the current branch: everything changed since it diverged from the base (the merge-base). The base auto-detects (`origin` default → `main` → `master`, preferring the `origin/<name>` remote ref); pass `--pr=<ref>` (or `--pr --pr-base <ref>`; `--pr-base` requires `--pr`) to override. Positional paths remain path scopes, so `difftree --pr src` means "show the PR diff under `src`." Default endpoint is the working tree (commits + staged + unstaged + untracked); add `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
 - Comparison views (`--pr`, `--staged`, `--all`, …) are colorized when color is enabled
   (status marks by git state, `+N` green / `−M` red churn, and filenames via `LS_COLORS`).
   Honors `--color=<when>`, `--force-color`/`-C`, `NO_COLOR`, and auto-disables when piped.
