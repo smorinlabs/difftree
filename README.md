@@ -1,13 +1,15 @@
 # difftree
 
+[![Crates.io](https://img.shields.io/crates/v/difftree.svg)](https://crates.io/crates/difftree)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A fast, minimalist, git-aware directory tree viewer, written in Rust.
 
-> **Early fork.** difftree is an early-stage fork of
-> [lstr](https://github.com/bgreenwell/lstr) by Brandon Greenwell. At this point
-> it is functionally identical to its upstream seed (lstr 0.2.1) apart from being
-> renamed; git-aware tree features are the planned direction. See
+> difftree is a fork of [lstr](https://github.com/bgreenwell/lstr) by Brandon
+> Greenwell that now ships its own git-aware comparison features: PR-style diff
+> trees (`--pr`), ref and range comparisons (`--against <ref>`, `--range <a..b>`),
+> staged/unstaged/uncommitted views, an all-files view (`--all`), status marks
+> (`--marks`), churn/heat display, and `--json` structured output. See
 > [Credits / Attribution](#credits--attribution) and `NOTICE`.
 
 ![](assets/lstr-demo.gif)
@@ -21,6 +23,13 @@ A fast, minimalist, git-aware directory tree viewer, written in Rust.
 
 ## Features
 
+  - **Git-aware comparison views:**
+      - `--pr`: PR-style diff for the current branch — everything changed since it diverged from the base (merge-base → HEAD semantics), with base auto-detect (`origin` default → `main` → `master`); override with `--pr=<ref>` or `--pr-base <ref>`.
+      - `--against <ref>` and `--range <a..b>` for explicit ref and range comparisons.
+      - `--staged` (alias `--cached`), `--unstaged`, and `--uncommitted` working-tree comparisons.
+      - All-files view (`--all`, alias `--tree`): the complete directory tree with change marks overlaid.
+      - Status marks (`--marks=symbol|letter|xy`) and churn/heat display (per-file `+N −M` line counts, `--heat`).
+      - `--json` structured output (schema `difftree.v2`).
   - **Classic and interactive modes:** Use `difftree` for a classic `tree`-like view, or launch `difftree interactive` for a fully interactive TUI.
   - **Theme-aware coloring:** Respects your system's `LS_COLORS` environment variable for fully customizable file and directory colors.
   - **Rich information display (optional):**
@@ -33,6 +42,14 @@ A fast, minimalist, git-aware directory tree viewer, written in Rust.
       - Control recursion depth (`-L`) or show only directories (`-d`).
 
 ## Installation
+
+### From crates.io
+
+`difftree` is published on [crates.io](https://crates.io/crates/difftree) (v0.3.x):
+
+```bash
+cargo install difftree
+```
 
 ### From source
 
@@ -48,6 +65,12 @@ You need the Rust toolchain installed on your system to build `difftree`.
     cargo install --path .
     ```
 
+### GitHub Action
+
+The companion action [smorinlabs/difftree-action](https://github.com/smorinlabs/difftree-action)
+posts a diff-tree of a pull request's changes (rendered by `difftree --pr`) as a
+self-updating PR comment.
+
 ## Usage
 
 ```bash
@@ -59,7 +82,8 @@ Note that `PATH` defaults to the current directory (`.`) if not specified.
 
 | Option                 | Description                                                                 |
 | :--------------------- | :-------------------------------------------------------------------------- |
-| `-a`, `--all`          | List all files and directories, including hidden ones.                      |
+| `-a`, `--show-all`     | List all files and directories, including hidden ones.                      |
+| `--all` (alias `--tree`)| Render the all-files view: the complete tree with git change marks overlaid. |
 | `--color <WHEN>`       | Specify when to use color output (`always`, `auto`, `never`).               |
 | `-d`, `--dirs-only`    | List directories only, ignoring all files.                                  |
 | `-g`, `--gitignore`    | Respect `.gitignore` and other standard ignore files.                       |
@@ -276,12 +300,13 @@ Enormous thanks to Brandon Greenwell and the lstr contributors for the original 
 
 This project is licensed under the terms of the [MIT License](LICENSE).
 
-## difftree v0.2 PRD slice
+## Git-aware comparison views
 
-The v0.2 implementation introduces the git-aware blast-radius surface described in `docs/PRD/difftree-prd-v0.2.md`:
+difftree's git-aware blast-radius surface (introduced in v0.2 per `docs/PRD/difftree-prd-v0.2.md`, refined in v0.3):
 
 - Bare `difftree` in a git repository shows staged blast radius and falls back with `No staged changes — showing unstaged blast radius` when staged changes are empty.
-- Comparison modes and views: `--unstaged`, `--all`, `--range <A..B>`, and `--against <ref>`.
+- Comparison modes: `--staged` (alias `--cached`), `--unstaged`, `--uncommitted` (staged + unstaged + untracked vs `HEAD`), `--range <A..B>`, and `--against <ref>`.
+- All-files view (`--all`, alias `--tree`): renders the complete directory tree with git change marks overlaid; unchanged files are shown as `Clean`.
 - `--pr` shows the PR-style diff for the current branch: everything changed since it diverged from the base (the merge-base). The base auto-detects (`origin` default → `main` → `master`, preferring the `origin/<name>` remote ref); pass `--pr=<ref>` or `--pr-base <ref>` to override. Positional paths remain path scopes, so `difftree --pr src` means "show the PR diff under `src`." Default endpoint is the working tree (commits + staged + unstaged + untracked); add `--committed` to narrow to committed branch commits only (`merge-base → HEAD`).
 - Comparison views (`--pr`, `--staged`, `--all`, …) are colorized when color is enabled
   (status marks by git state, `+N` green / `−M` red churn, and filenames via `LS_COLORS`).
@@ -293,7 +318,7 @@ The v0.2 implementation introduces the git-aware blast-radius surface described 
 - The footer keeps the existing directory/churn summary and adds a GitHub-style
   change-kind count. A single-kind set collapses to `2 files modified`; mixed sets
   render inline, such as `3 files changed (1 added · 1 modified · 1 deleted)`.
-- `--tree` renders a full status-marked tree; `--plain`/`--no-git` preserves classic tree behavior.
+- `--plain` (alias `--no-git`) preserves classic tree behavior.
 - `--json` is available on every rendering command path with `schema_version:
   "difftree.v2"`. Git-aware modes and views (`difftree --json`, `--all --json`,
   `--pr --json`, and related comparison flags) emit the `ChangeTree` model.
