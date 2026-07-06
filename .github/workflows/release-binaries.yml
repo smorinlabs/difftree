@@ -25,7 +25,7 @@ name: release-binaries
 #   | Linux x86_64 (glibc)  | x86_64-unknown-linux-gnu   | .tar.gz |
 #   | Linux aarch64 (glibc) | aarch64-unknown-linux-gnu  | .tar.gz |
 #   | macOS x86_64 (Intel)  | x86_64-apple-darwin        | .tar.gz |
-#   | macOS aarch64 (M-ser) | aarch64-apple-darwin       | .tar.gz |
+#   | macOS Apple Silicon   | aarch64-apple-darwin       | .tar.gz |
 #   | Windows x86_64 (MSVC) | x86_64-pc-windows-msvc     | .zip    |
 #
 #   Example: difftree-v0.3.0-aarch64-apple-darwin.tar.gz
@@ -50,8 +50,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    # Same defense-in-depth guard as publish.yml: a tag can point at any
+    # commit, including one on an unmerged branch. Official binaries must
+    # only ever be built from commits reachable from main.
+    name: verify tag is on main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          fetch-depth: 0 # full history for the merge-base ancestor check
+      - name: Verify tag is reachable from main
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag ${TAG} ($(git rev-parse HEAD)) is not reachable from origin/main; refusing to build binaries."
+            exit 1
+          fi
+          echo "Tag ${TAG} is on main."
+
   build:
     name: build (${{ matrix.target }})
+    needs: verify
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write # gh release upload
