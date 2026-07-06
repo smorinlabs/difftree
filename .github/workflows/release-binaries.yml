@@ -75,6 +75,21 @@ jobs:
           fi
           echo "Tag ${TAG} is on main."
 
+      - name: Verify tag matches Cargo.toml version
+        # Same guard as publish.yml — matters for workflow_dispatch backfills,
+        # where an arbitrary tag input could otherwise attach assets whose
+        # embedded version disagrees with the asset name.
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          VERSION="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)"
+          if [ "v${VERSION}" != "${TAG}" ]; then
+            echo "::error::Tag ${TAG} does not match Cargo.toml version v${VERSION}; refusing to build binaries."
+            exit 1
+          fi
+          echo "Tag ${TAG} matches Cargo.toml v${VERSION}."
+
   build:
     name: build (${{ matrix.target }})
     needs: verify
