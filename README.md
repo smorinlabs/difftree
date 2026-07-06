@@ -9,7 +9,7 @@ A fast, minimalist, git-aware directory tree viewer, written in Rust.
 > Greenwell that now ships its own git-aware comparison features: PR-style diff
 > trees (`--pr`), ref and range comparisons (`--against <ref>`, `--range <a..b>`),
 > staged/unstaged/uncommitted views, an all-files view (`--all`), status marks
-> (`--marks`), churn/heat display, and `--json` structured output. See
+> (`--marks`), per-file churn display, and `--json` structured output. See
 > [Credits / Attribution](#credits--attribution) and `NOTICE`.
 
 ![](assets/lstr-demo.gif)
@@ -328,6 +328,6 @@ difftree's git-aware blast-radius surface (introduced in v0.2 per `docs/PRD/diff
   paths (`--plain --json`, non-git fallbacks, `-G --json`, and
   `interactive --json`) emit a plain-tree JSON model. Explicit git comparisons
   such as `--staged --json` and `--pr --json` still require a git repository.
-- `--marks=symbol|letter|xy` controls status marks; `--heat=color,bar,badge` records the v1 heat-component grammar.
+- `--marks=symbol|letter|xy` controls status marks. (`--heat` is accepted for the v1 heat-component grammar but is not yet wired to rendering.)
 
 See `docs/specs/difftree-decisions-v0.2.md` for the locked flag table and JSON contract.
