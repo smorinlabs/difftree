@@ -1,5 +1,9 @@
 # Dogfood the released difftree GitHub Action: post a diff-tree comment
-# (rendered by `difftree --pr`) on every pull request in this repo.
+# (rendered by `difftree --pr`) on pull requests in this repo.
+#
+# Fork PRs: GITHUB_TOKEN is read-only there, so the action logs a warning and
+# skips the comment (the run still succeeds; the tree stays available in the
+# job log and the `tree` output). Same-repo PRs get the sticky comment.
 name: difftree PR comment
 
 on:
