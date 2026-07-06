@@ -24,11 +24,11 @@ A fast, minimalist, git-aware directory tree viewer, written in Rust.
 ## Features
 
   - **Git-aware comparison views:**
-      - `--pr`: PR-style diff for the current branch — everything changed since it diverged from the base (merge-base → HEAD semantics), with base auto-detect (`origin` default → `main` → `master`); override with `--pr=<ref>` or `--pr-base <ref>`.
+      - `--pr`: PR-style diff for the current branch — everything changed since it diverged from the base (merge-base → HEAD), **including uncommitted changes by default**; add `--committed` to show committed changes only. Base is auto-detected (`origin` default → `main` → `master`); override with `--pr=<ref>` or `--pr-base <ref>`.
       - `--against <ref>` and `--range <a..b>` for explicit ref and range comparisons.
       - `--staged` (alias `--cached`), `--unstaged`, and `--uncommitted` working-tree comparisons.
       - All-files view (`--all`, alias `--tree`): the complete directory tree with change marks overlaid.
-      - Status marks (`--marks=symbol|letter|xy`) and churn/heat display (per-file `+N −M` line counts, `--heat`).
+      - Status marks (`--marks=symbol|letter|xy`) and per-file churn display (`+N −M` line counts).
       - `--json` structured output (schema `difftree.v2`).
   - **Classic and interactive modes:** Use `difftree` for a classic `tree`-like view, or launch `difftree interactive` for a fully interactive TUI.
   - **Theme-aware coloring:** Respects your system's `LS_COLORS` environment variable for fully customizable file and directory colors.
