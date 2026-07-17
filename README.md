@@ -71,6 +71,12 @@ The companion action [smorinlabs/difftree-action](https://github.com/smorinlabs/
 posts a diff-tree of a pull request's changes (rendered by `difftree --pr`) as a
 self-updating PR comment.
 
+To wire it into a repo with an agent, this repo ships a small
+[`setup-difftree`](.claude/skills/setup-difftree/SKILL.md) pointer skill
+(auto-discovered by Claude Code and Codex; see
+[docs/skills/setup-difftree.md](docs/skills/setup-difftree.md)) that routes you
+to the canonical setup skill living in the difftree-action repo.
+
 ## Usage
 
 ```bash
