@@ -1,17 +1,17 @@
 ---
-name: setup-difftree
+name: difftree-setup
 description: >-
   Pointer to difftree's install/setup skill, which lives in the companion
   difftree-action repo. Fires when someone in the difftree repo says "install
   difftree", "set up difftree", "add difftree to my CI", "add PR diff-tree
   comments", or "set up difftree-action". It does not install or configure
-  anything itself — it routes to the canonical setup-difftree skill at
+  anything itself — it routes to the canonical difftree-action-setup skill at
   github.com/smorinlabs/difftree-action (which installs the CLI and scaffolds
   the PR workflow) and points at this repo's README for a plain local
   `cargo install difftree`.
 ---
 
-# setup-difftree
+# difftree-setup
 
 Pointer only: the real difftree install/setup skill lives in the companion
 **difftree-action** repo. This routes you there — it installs and configures
@@ -24,12 +24,12 @@ PR diff-tree comments", "set up difftree-action".
 
 ## Where the setup skill lives
 
-The full **`setup-difftree`** skill — installs the difftree CLI and scaffolds
+The full **`difftree-action-setup`** skill — installs the difftree CLI and scaffolds
 `smorinlabs/difftree-action` into a repository's PR workflow — ships in the
 difftree-action repo:
 
 - Repo: <https://github.com/smorinlabs/difftree-action>
-- Docs: <https://github.com/smorinlabs/difftree-action/blob/main/docs/skills/setup-difftree.md>
+- Docs: <https://github.com/smorinlabs/difftree-action/blob/main/docs/skills/difftree-action-setup.md>
 
 Claude Code and Codex auto-discover that skill when you clone or open the
 difftree-action repo; the docs page above also shows how to copy it into your
