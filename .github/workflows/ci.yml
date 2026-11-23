@@ -9,6 +9,13 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Cancel superseded runs on pull requests only. On `push` to main the group is
+# keyed on the commit SHA, so every main run is unique and is never cancelled
+# or queued behind another one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # This defines the environment for the workflow. We set Cargo to use color output.
 env:
   CARGO_TERM_COLOR: always
@@ -30,17 +37,13 @@ jobs:
     # 1. Check out the repository code so the workflow can access it
     - uses: actions/checkout@v4
 
-    # 2. Cache the cargo directories to speed up future builds
+    # 2. Cache ~/.cargo and target/ with Swatinem/rust-cache. The key includes
+    #    the rustc version and Cargo.lock hash, restore-keys fall back to the
+    #    newest compatible cache, and target/ is pruned of workspace artifacts
+    #    before saving. Saves on every branch (an exact hit does not re-save);
+    #    PR caches are scoped to the PR, while main's cache is visible to PRs.
     - name: Cache cargo dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      uses: Swatinem/rust-cache@v2
 
     # 3. Check that the code is formatted correctly
     - name: Check formatting
@@ -55,6 +58,11 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
-    # 6. Build the project in release mode to ensure it compiles
+    # 6. Build in release mode (LTO, codegen-units = 1, panic = "abort") on
+    #    Linux only. release-binaries.yml builds every shipped target, but only
+    #    after a release is published, so this is the one pre-merge check of
+    #    the release profile. It is skipped on macOS and Windows because the
+    #    LTO link is the slowest step and Windows sets the wall-clock.
     - name: Build
+      if: runner.os == 'Linux'
       run: cargo build --release --verbose

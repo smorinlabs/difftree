@@ -33,3 +33,22 @@ each other on any shared discovery path. The action repo's skill is renamed to
 - [x] [P02-TS01] `skillsmith verify` + skill-quality pass under the new name
       (pass on claude-code + codex; no stale refs; cross-refs resolve)
 - [ ] [P02-T03] Open PR to `smorinlabs/difftree`
+
+## [~] Project P03: CI speed — rust-cache, PR concurrency, Linux-only release build (ci, no crate change)
+**Goal**: Cut "Rust CI" wall-clock (median 157 s, Windows on the critical path)
+without dropping coverage or changing the three required check names.
+- Replace `actions/cache` with `Swatinem/rust-cache@v2` (rustc-aware key,
+  restore-keys fallback, `target/` pruning)
+- Add a `concurrency` group that cancels superseded PR runs; main pushes are
+  never cancelled
+- Run the LTO `cargo build --release` step on the Linux leg only
+
+**Out of Scope**
+- cargo-nextest, path filters (all 3 legs are required checks), dropping Windows
+
+### Tests & Tasks
+- [x] [P03-T01] Edit `.github/workflows/ci.yml` (cache, concurrency, Build `if`)
+- [x] [P03-TS01] `actionlint` passes (only the pre-existing Blacksmith
+      runner-label warnings remain)
+- [ ] [P03-TS02] CI green on all three legs; cold and warm timings recorded
+- [ ] [P03-T02] Open PR to `smorinlabs/difftree`
