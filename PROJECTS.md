@@ -34,7 +34,7 @@ each other on any shared discovery path. The action repo's skill is renamed to
       (pass on claude-code + codex; no stale refs; cross-refs resolve)
 - [ ] [P02-T03] Open PR to `smorinlabs/difftree`
 
-## [~] Project P03: CI speed — rust-cache, PR concurrency, Linux-only release build (ci, no crate change)
+## [x] Project P03: CI speed — rust-cache, PR concurrency, Linux-only release build (ci, no crate change)
 **Goal**: Cut "Rust CI" wall-clock (median 157 s, Windows on the critical path)
 without dropping coverage or changing the three required check names.
 - Replace `actions/cache` with `Swatinem/rust-cache@v2` (rustc-aware key,
