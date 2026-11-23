@@ -50,5 +50,6 @@ without dropping coverage or changing the three required check names.
 - [x] [P03-T01] Edit `.github/workflows/ci.yml` (cache, concurrency, Build `if`)
 - [x] [P03-TS01] `actionlint` passes (only the pre-existing Blacksmith
       runner-label warnings remain)
-- [ ] [P03-TS02] CI green on all three legs; cold and warm timings recorded
-- [ ] [P03-T02] Open PR to `smorinlabs/difftree`
+- [x] [P03-TS02] CI green on all three legs; cold and warm timings recorded
+      (cold 82 s, warm 40 s wall vs 157 s baseline median — see PR #19)
+- [x] [P03-T02] Open PR to `smorinlabs/difftree` — #19
